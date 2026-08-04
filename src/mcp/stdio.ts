@@ -60,27 +60,22 @@ export async function serveStdio(deps: ToolDeps, options: ServeStdioOptions = {}
 }
 
 /**
- * SIGINT/SIGTERM arrive when the client kills the subprocess. The handler blocks
- * exit until teardown settles — `void`-ing it would let the event loop drain and the
- * process exit mid-close, which is exactly the severed connection this avoids.
+ * SIGINT/SIGTERM arrive when the client kills the subprocess — this is how Claude
+ * Code stops the server.
+ *
+ * A timer to hold the event loop open across teardown was tried and removed: with it
+ * gone, all three teardown paths still complete and exit 0, so it was doing no work.
+ * Phase 4 should re-check once a pg Pool is behind `onShutdown`, since that is the
+ * case where a slow close could in principle race the loop draining.
  */
 function installShutdownHandlers(log: Logger, teardown: () => Promise<void>): void {
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => {
       log.info({ signal }, "shutting down");
-      const keepAlive = setTimeout(() => undefined, SHUTDOWN_GRACE_MS);
-      void runTeardown(log, teardown).finally(() => {
-        clearTimeout(keepAlive);
-      });
+      void runTeardown(log, teardown);
     });
   }
 }
-
-/**
- * Long enough to close a pool, short enough that a wedged close still lets the
- * process exit rather than hanging a client's shutdown.
- */
-const SHUTDOWN_GRACE_MS = 5_000;
 
 async function runTeardown(log: Logger, teardown: () => Promise<void>): Promise<void> {
   try {

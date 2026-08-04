@@ -31,6 +31,7 @@ interface RawSession {
   waitForResponses(count: number): Promise<RawFrame[]>;
   /** Closes stdin, which is how a client disconnects without signalling. */
   disconnect(): void;
+  signal(name: "SIGINT" | "SIGTERM"): void;
   waitForExit(): Promise<number | null>;
   /** Complete stdout lines that were not parseable JSON. Must always stay empty. */
   readonly malformed: readonly string[];
@@ -107,6 +108,9 @@ function startRaw(): RawSession {
     },
     disconnect() {
       child.stdin.end();
+    },
+    signal(name) {
+      child.kill(name);
     },
     waitForExit() {
       return new Promise<number | null>((resolve) => {
@@ -208,6 +212,37 @@ describe("stdio transport: raw stream inspection (DD-026)", { timeout: STARTUP_T
     expect(session.stderr).toContain("released resources");
     expect(session.stderr).toContain("client disconnected");
     // Teardown must not have printed anything either.
+    expect(session.malformed).toEqual([]);
+  });
+});
+
+/**
+ * The signal path, which is how Claude Code actually stops the server — it sends
+ * SIGINT. Tested separately from the stream-close path because they reach teardown
+ * through different mechanisms, and only one of them was exercised at first.
+ */
+describe("stdio transport: teardown on a signal", { timeout: STARTUP_TIMEOUT_MS }, () => {
+  it.each([["SIGINT"], ["SIGTERM"]] as const)("releases resources on %s", async (name) => {
+    const session = startRaw();
+    session.send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "signal-test", version: "0.0.0" },
+      },
+    });
+    await session.waitForResponses(1);
+
+    session.signal(name);
+    const code = await session.waitForExit();
+
+    expect(session.stderr).toContain(`"signal":"${name}"`);
+    expect(session.stderr).toContain("released resources");
+    // Not killed mid-teardown: the handler holds the loop open until close settles.
+    expect(code).toBe(0);
     expect(session.malformed).toEqual([]);
   });
 });
