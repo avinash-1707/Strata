@@ -10,4 +10,12 @@ const log = createLogger("debug");
 
 log.info({ MCP_AUTH_TOKEN: "super-secret-token-value", tool: "probe" }, "probe-info");
 log.debug({ nested: { POSTGRES_URL: "postgres://user:pw@host/db" } }, "probe-debug");
-log.error({}, "probe-error");
+log.error(
+  {
+    // A DSN inside a *message string* is what path-based redaction cannot see: this
+    // is the shape a driver error arrives in.
+    error: "connect ECONNREFUSED postgres://strata:s3cret@10.0.0.4:5432/strata",
+    detail: { inner: ["also redis://:hunter2@cache:6379 in an array"] },
+  },
+  "probe-error",
+);

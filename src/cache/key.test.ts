@@ -69,6 +69,30 @@ describe("composeRecallKey", () => {
     expect(a).not.toBe(b);
   });
 
+  /* query and sessionId are caller-supplied, so a delimiter-joined key is forgeable:
+     move the delimiter into a part and two distinct tuples collide. Length prefixes
+     remove the possibility rather than making it unlikely. */
+  it.each([
+    ["a null byte", "\u0000"],
+    ["a pipe", "|"],
+    ["a colon", ":"],
+    ["a digit-colon pair mimicking a length prefix", "1:"],
+  ])("cannot be forged by embedding %s in a part", (_label, injected) => {
+    const honest = composeRecallKey(1, { query: "a", k: 8, synthesize: true, sessionId: "x" });
+    const forged = composeRecallKey(1, {
+      query: `a${injected}8${injected}syn${injected}x`,
+      k: 8,
+      synthesize: true,
+    });
+    expect(forged).not.toBe(honest);
+  });
+
+  it("separates a shifted boundary between query and sessionId", () => {
+    const a = composeRecallKey(1, { query: "ab", k: 8, synthesize: true, sessionId: "c" });
+    const b = composeRecallKey(1, { query: "a", k: 8, synthesize: true, sessionId: "bc" });
+    expect(a).not.toBe(b);
+  });
+
   it("does not leak the query text into the key", () => {
     const key = composeRecallKey(1, { ...base, query: "my secret project codename" });
     expect(key).not.toContain("secret");

@@ -22,14 +22,11 @@ export interface ToolPayload<T> {
 }
 
 /**
- * The single wrapper every tool handler goes through. It exists so that the
- * per-invocation log line (tool, duration, outcome) and the
- * error-to-`isError` mapping have exactly one implementation, rather than being
- * re-derived — slightly differently — in each of the four tools.
+ * The single wrapper every tool handler goes through, so the per-invocation log line
+ * and the error mapping have one implementation rather than four that drift.
  *
- * A tool-level failure returns `isError: true` with a useful message rather than
- * throwing, because a thrown error reaches the agent as a protocol fault it cannot
- * act on.
+ * A failure returns `isError: true`; a thrown error reaches the agent as a protocol
+ * fault it cannot act on.
  */
 export async function runTool<T extends Record<string, unknown>>(
   name: string,

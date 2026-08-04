@@ -9,11 +9,10 @@ import type {
 } from "../store/types.js";
 
 /**
- * An in-memory `MemoryStore`. Its purpose is to make the *tool* logic testable —
- * degradation paths especially — not to imitate Postgres. Where the two could
- * differ (ranking quality, tsquery semantics, HNSW recall), the fake is
- * deliberately simple; the store conformance suite is what proves the fake and
- * Postgres agree on the contract, and it runs against both (DD-032).
+ * An in-memory `MemoryStore`, for testing tool logic and its degradation paths — not
+ * an imitation of Postgres. Where the two could differ (ranking quality, tsquery
+ * semantics, HNSW recall) this is deliberately simple; the conformance suite run
+ * against both is what proves they agree on the contract (DD-032).
  */
 export interface FakeStore extends MemoryStore {
   /** Rows as stored, including non-live ones, for assertions. */

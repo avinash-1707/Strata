@@ -87,6 +87,24 @@ describe("createLogger (subprocess, real fds)", () => {
   });
 
   it("keeps non-secret context", () => {
-    expect(probe.stderr).toContain("probe");
+    // The full key/value, not just "probe" — every message contains that substring,
+    // so asserting on it alone would pass even if the field were dropped.
+    expect(probe.stderr).toContain('"tool":"probe"');
+  });
+
+  /* wrapError folds its cause into a message string, so a failed connection arrives
+     as a DSN inside a value that redact's path matching cannot reach. */
+  it("redacts a connection string embedded in a message string", () => {
+    expect(probe.stderr).not.toContain("s3cret");
+    expect(probe.stderr).not.toContain("10.0.0.4:5432");
+    expect(probe.stderr).toContain("[redacted-dsn]");
+  });
+
+  it("redacts one nested inside an array", () => {
+    expect(probe.stderr).not.toContain("hunter2");
+  });
+
+  it("keeps the surrounding text of a scrubbed message", () => {
+    expect(probe.stderr).toContain("connect ECONNREFUSED");
   });
 });

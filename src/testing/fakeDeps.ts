@@ -1,4 +1,5 @@
 import type { Config } from "../config.js";
+import { describeUnknown } from "../errors.js";
 import type { Logger } from "../logger.js";
 import { createSilentLogger } from "../logger.js";
 import type { BackgroundRunner, ToolDeps } from "../mcp/deps.js";
@@ -53,48 +54,60 @@ const FAKE_CONFIG: Config = Object.freeze({
 });
 
 export function createFakeDeps(options: FakeDepsOptions = {}): FakeDeps {
-  const background = createTrackingBackgroundRunner();
+  const log = options.log ?? createSilentLogger();
+  const background = createTrackingBackgroundRunner(log);
   return {
     store: createFakeStore(options.store),
     cache: createFakeCache(options.cache),
     ollama: createFakeOllama(options.ollama),
-    config: Object.freeze({ ...FAKE_CONFIG, ...options.config }),
-    log: options.log ?? createSilentLogger(),
+    config: Object.freeze({ ...FAKE_CONFIG, ...definedOnly(options.config) }),
+    log,
     background,
   };
 }
 
-export function createTrackingBackgroundRunner(): TrackingBackgroundRunner {
+export function createTrackingBackgroundRunner(log?: Logger): TrackingBackgroundRunner {
   const pending: Promise<void>[] = [];
   const labels: string[] = [];
   const failures: { label: string; error: unknown }[] = [];
 
-  const run = ((label: string, work: () => Promise<void>) => {
+  const run = (label: string, work: () => Promise<void>): void => {
     labels.push(label);
     pending.push(
       Promise.resolve()
         .then(work)
         .catch((error: unknown) => {
           failures.push({ label, error });
+          log?.warn({ label, error: describeUnknown(error) }, "background task failed");
         }),
     );
-  }) as TrackingBackgroundRunner;
+  };
 
-  Object.defineProperties(run, {
-    labels: { get: () => labels },
-    failures: { get: () => failures },
-    settled: {
-      value: async (): Promise<void> => {
-        // A settled task may itself have started another, so drain until stable
-        // rather than awaiting the snapshot once.
-        let seen = 0;
-        while (pending.length > seen) {
-          seen = pending.length;
-          await Promise.all(pending.slice(0, seen));
-        }
-      },
+  // Object.assign, not a type assertion plus defineProperties: the properties end up
+  // enumerable, so toMatchObject and snapshots can actually see them.
+  return Object.assign(run, {
+    labels,
+    failures,
+    settled: async (): Promise<void> => {
+      // A settled task may itself have started another, so drain until stable rather
+      // than awaiting one snapshot.
+      let seen = 0;
+      while (pending.length > seen) {
+        seen = pending.length;
+        await Promise.all(pending);
+      }
     },
   });
+}
 
-  return run;
+/**
+ * `Partial<Config>` permits an explicit `undefined`, which would spread over a
+ * required field and leave a `Config` whose typed-as-number property is undefined —
+ * a lying type at a boundary under `exactOptionalPropertyTypes`.
+ */
+function definedOnly(overrides: Partial<Config> | undefined): Partial<Config> {
+  if (overrides === undefined) {
+    return {};
+  }
+  return Object.fromEntries(Object.entries(overrides).filter(([, value]) => value !== undefined));
 }

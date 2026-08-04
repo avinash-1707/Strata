@@ -18,9 +18,22 @@ const STARTUP_TIMEOUT_MS = 20_000;
  * be tested. In-process, pino writes through its own destination and never touches
  * `process.stdout` at all, so an in-process assertion would pass vacuously.
  */
+interface RawFrame {
+  readonly jsonrpc?: unknown;
+  readonly id?: unknown;
+  readonly method?: unknown;
+  readonly error?: unknown;
+  readonly result?: unknown;
+}
+
 interface RawSession {
   send(frame: unknown): void;
-  waitForResponses(count: number): Promise<Record<string, unknown>[]>;
+  waitForResponses(count: number): Promise<RawFrame[]>;
+  /** Closes stdin, which is how a client disconnects without signalling. */
+  disconnect(): void;
+  waitForExit(): Promise<number | null>;
+  /** Complete stdout lines that were not parseable JSON. Must always stay empty. */
+  readonly malformed: readonly string[];
   readonly stdout: string;
   readonly stderr: string;
   kill(): void;
@@ -36,7 +49,8 @@ function startRaw(): RawSession {
 
   let stdout = "";
   let stderr = "";
-  const responses: Record<string, unknown>[] = [];
+  const frames: RawFrame[] = [];
+  const malformed: string[] = [];
   const waiters: (() => void)[] = [];
 
   child.stdout.setEncoding("utf8");
@@ -45,10 +59,19 @@ function startRaw(): RawSession {
     // Reparsed from scratch on every chunk: the last element of the split is an
     // incomplete line, and rebuilding avoids tracking a partial-frame offset.
     const complete = stdout.split("\n").slice(0, -1);
-    responses.length = 0;
+    frames.length = 0;
+    malformed.length = 0;
     for (const line of complete) {
-      if (line.trim().length > 0) {
-        responses.push(JSON.parse(line) as Record<string, unknown>);
+      if (line.trim().length === 0) {
+        continue;
+      }
+      // Parsed defensively on purpose. An unguarded JSON.parse here throws inside a
+      // 'data' handler, which surfaces as an uncaught exception in the runner and
+      // stops the very test that exists to report the stray output.
+      try {
+        frames.push(JSON.parse(line) as RawFrame);
+      } catch {
+        malformed.push(line);
       }
     }
     for (const waiter of waiters.splice(0)) {
@@ -66,7 +89,7 @@ function startRaw(): RawSession {
     },
     async waitForResponses(count) {
       const deadline = Date.now() + STARTUP_TIMEOUT_MS;
-      while (responses.filter((frame) => "id" in frame).length < count) {
+      while (frames.filter((frame) => frame.id !== undefined).length < count) {
         if (Date.now() > deadline) {
           throw new Error(
             `timed out waiting for ${String(count)} responses.\nstdout: ${stdout}\nstderr: ${stderr}`,
@@ -77,7 +100,24 @@ function startRaw(): RawSession {
           setTimeout(resolve, 50);
         });
       }
-      return responses;
+      return frames.filter((frame) => frame.id !== undefined);
+    },
+    get malformed() {
+      return malformed;
+    },
+    disconnect() {
+      child.stdin.end();
+    },
+    waitForExit() {
+      return new Promise<number | null>((resolve) => {
+        if (child.exitCode !== null) {
+          resolve(child.exitCode);
+          return;
+        }
+        child.once("exit", (code) => {
+          resolve(code);
+        });
+      });
     },
     get stdout() {
       return stdout;
@@ -120,8 +160,17 @@ describe("stdio transport: raw stream inspection (DD-026)", { timeout: STARTUP_T
       params: { name: "strata_health", arguments: { echo: "raw" } },
     });
 
-    const frames = await session.waitForResponses(3);
-    expect(frames).toHaveLength(3);
+    const responses = await session.waitForResponses(3);
+
+    expect(responses.map((frame) => frame.id)).toEqual([1, 2, 3]);
+    // A JSON-RPC error would otherwise satisfy "three responses arrived".
+    expect(responses.filter((frame) => frame.error !== undefined)).toEqual([]);
+
+    const listed = responses[1]?.result as { tools?: { name: string }[] } | undefined;
+    expect(listed?.tools?.map((tool) => tool.name)).toContain("strata_health");
+
+    const called = responses[2]?.result as { isError?: boolean } | undefined;
+    expect(called?.isError).toBeFalsy();
   });
 
   /* The load-bearing assertion of the whole phase: a single stray byte on stdout
@@ -130,6 +179,7 @@ describe("stdio transport: raw stream inspection (DD-026)", { timeout: STARTUP_T
     const lines = session.stdout.split("\n").filter((line) => line.trim().length > 0);
 
     expect(lines.length).toBeGreaterThan(0);
+    expect(session.malformed).toEqual([]);
     for (const line of lines) {
       const frame: unknown = JSON.parse(line);
       expect(frame).toMatchObject({ jsonrpc: "2.0" });
@@ -145,6 +195,20 @@ describe("stdio transport: raw stream inspection (DD-026)", { timeout: STARTUP_T
     expect(session.stdout).not.toContain("listening on stdio");
     expect(session.stdout).not.toContain("tool call completed");
     expect(session.stdout).not.toContain('"level"');
+  });
+
+  /* Teardown is reachable from two paths — a signal, and the client just closing the
+     stream. The second is the one with no handler to hang it on, so it is the one
+     that would silently sever a pg Pool in Phase 4. */
+  it("runs teardown and exits cleanly when the client closes the stream", async () => {
+    session.disconnect();
+    const code = await session.waitForExit();
+
+    expect(code).toBe(0);
+    expect(session.stderr).toContain("released resources");
+    expect(session.stderr).toContain("client disconnected");
+    // Teardown must not have printed anything either.
+    expect(session.malformed).toEqual([]);
   });
 });
 

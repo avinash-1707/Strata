@@ -20,11 +20,9 @@ export interface ToolDeps {
 }
 
 /**
- * Runs work that must not delay the response — DD-011's usage update on a cache
- * hit above all. Without this seam that update has no correct spelling: awaiting
- * it makes a cache hit slower than the miss it replaced, and floating the promise
- * is banned outright. Injecting the runner also makes the work assertable in a
- * test, which a bare fire-and-forget is not.
+ * Runs work that must not delay the response — DD-011's usage update on a cache hit
+ * above all, which otherwise has no correct spelling: awaiting it makes a hit slower
+ * than the miss it replaced, and floating the promise is banned (§7).
  */
 export type BackgroundRunner = (label: string, work: () => Promise<void>) => void;
 

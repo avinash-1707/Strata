@@ -10,6 +10,12 @@ export interface Cache {
   /** DD-010: `INCR`d by every mutation, which is what makes stale keys unreachable. */
   bumpCorpusVersion(): Promise<void>;
 
+  /**
+   * One recall must pass the *same* version to both calls. Were the version read
+   * inside `setRecall`, a mutation landing between the read and the write would
+   * store pre-mutation results under the post-mutation key — resurrecting the
+   * stale entry DD-010 exists to make unreachable.
+   */
   getRecall(corpusVersion: number, key: RecallKey): Promise<RecallOutput | undefined>;
 
   setRecall(corpusVersion: number, key: RecallKey, value: RecallOutput): Promise<void>;
@@ -30,12 +36,3 @@ export interface RecallKey {
   readonly synthesize: boolean;
   readonly sessionId?: string;
 }
-
-/**
- * `corpusVersion` is an explicit parameter on both get and set, and a single
- * recall must pass the same value to both. If `setRecall` re-read the version
- * itself, a mutation landing between the read and the write would store
- * pre-mutation results under the post-mutation key — resurrecting exactly the
- * stale entry DD-010 exists to make unreachable.
- */
-export type CorpusVersion = number;

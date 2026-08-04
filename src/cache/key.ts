@@ -3,17 +3,13 @@ import { createHash } from "node:crypto";
 import type { RecallKey } from "./types.js";
 
 /**
- * The one place a recall cache key is built, shared by the Redis client and the
- * in-memory fake so they cannot drift.
+ * The one place a recall cache key is built, shared by the Redis client and the fake
+ * so they cannot drift (DD-010).
  *
- * The corpus version is a *prefix*, not part of the hash: every mutation `INCR`s
- * it, which makes every prior key unreachable at once and lets stale entries die
- * on their own TTL — no key scanning, no reverse index, no invalidation logic to
- * get wrong (DD-010).
- *
- * `k`, `synthesize`, and `sessionId` are all inside the hash because leaving them
- * out was a real defect: keying on the query alone let `k=8` collide with `k=50`,
- * and let a `synthesize: false` call be served a cached `answer`.
+ * The version is a *prefix*, not hashed: `INCR` then makes every prior key
+ * unreachable at once, with no scanning and no reverse index. `k`, `synthesize`, and
+ * `sessionId` are inside the hash because omitting them let `k=8` collide with
+ * `k=50` and served a cached `answer` to `synthesize: false`.
  */
 export function composeRecallKey(corpusVersion: number, key: RecallKey): string {
   const parts = [
@@ -22,9 +18,11 @@ export function composeRecallKey(corpusVersion: number, key: RecallKey): string 
     key.synthesize ? "syn" : "raw",
     key.sessionId ?? "",
   ];
-  // A separator that survives normalization but cannot occur in any part, so
-  // k=1 with session "2" cannot hash to the same tuple as k=12 with no session.
-  const digest = createHash("sha256").update(parts.join("\u0000")).digest("hex");
+  // Length-prefixed, not separator-joined. `query` and `sessionId` are caller
+  // strings, so no separator is unforgeable: with a plain delimiter a caller can
+  // move it into a part and make two distinct tuples hash alike.
+  const canonical = parts.map((part) => `${String(part.length)}:${part}`).join("");
+  const digest = createHash("sha256").update(canonical).digest("hex");
   return `recall:v${String(corpusVersion)}:${digest}`;
 }
 

@@ -25,4 +25,12 @@ const deps = {
   background: createBackgroundRunner(log),
 };
 
-await serveStdio(deps);
+await serveStdio(deps, {
+  onShutdown: async () => {
+    // Phase 4's main.ts closes a pg Pool and a Redis socket here. With fakes there is
+    // nothing to release, so the log line is the only observable — which is exactly
+    // what the stdio test asserts, to prove the seam is actually reached.
+    await deps.cache.close();
+    log.info({}, "released resources");
+  },
+});

@@ -1,14 +1,8 @@
 import type { MemoryStatus } from "../contracts.js";
 
 /**
- * The persistence seam (DD-032). Domain methods, not SQL: `ToolDeps` holds a
- * `MemoryStore`, never a `Db`, because a `query(sql, params)` contract cannot be
- * faked without writing a SQL interpreter — which would make the fake-backed
- * tool tests unbuildable and their equivalence against real Postgres
- * unverifiable.
- *
- * This module imports only leaf types, so both the Postgres implementation and
- * the in-memory fake can depend on it.
+ * The persistence seam: domain methods, not SQL (DD-032). Imports only leaf types,
+ * so the Postgres implementation and the in-memory fake can both depend on it.
  */
 export interface MemoryStore {
   /** DD-020: an exact-duplicate `remember` returns the existing live row. */

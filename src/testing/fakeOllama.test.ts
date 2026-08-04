@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { ENHANCEMENT_TIMEOUT_MS } from "../config.js";
 import { isStrataError } from "../errors.js";
 import { assertEmbeddingDimensions, EMBEDDING_DIMENSIONS } from "../ollama/embedding.js";
 import { compressionJsonSchema, parseCompressionResult } from "../ollama/parse.js";
@@ -37,18 +38,26 @@ describe("fake ollama: embed", () => {
     expect(a.vector).not.toEqual(b.vector);
   });
 
-  /* DD-008's prefixes are the client's job, keyed off model family. The seam is
-     carried as intent — the kind — so no call site can apply a prefix itself. */
-  it("records the kind, not a prefixed string", async () => {
+  /* DD-008's prefixes are the client's job, keyed off model family, so the seam
+     carries the *kind* and no call site can apply a prefix itself. Whether the real
+     client applies them correctly is only testable against a model (Phase 6). */
+  it("records the kind alongside the unmodified text", async () => {
     const ollama = createFakeOllama();
     await ollama.embed("a query", "query");
-    await ollama.embed("a document", "document");
+    await ollama.embed("a document", "document", { timeoutMs: 5_000 });
 
     expect(ollama.embedCalls).toEqual([
-      { text: "a query", kind: "query" },
-      { text: "a document", kind: "document" },
+      { text: "a query", kind: "query", options: undefined },
+      { text: "a document", kind: "document", options: { timeoutMs: 5_000 } },
     ]);
-    expect(ollama.embedCalls[0]?.text).not.toContain("search_query:");
+  });
+
+  /* DD-005 stage 2 runs inline on the write path and needs a far tighter bound than
+     the per-call ceiling, so the budget has to be assertable. */
+  it("records the timeout it was given, so the stage-2 budget is assertable", async () => {
+    const ollama = createFakeOllama();
+    await ollama.embed("x", "document", { timeoutMs: ENHANCEMENT_TIMEOUT_MS });
+    expect(ollama.embedCalls[0]?.options).toEqual({ timeoutMs: ENHANCEMENT_TIMEOUT_MS });
   });
 
   it("raises OLLAMA_UNAVAILABLE in unavailable mode", async () => {

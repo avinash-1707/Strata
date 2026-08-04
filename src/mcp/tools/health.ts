@@ -12,9 +12,15 @@ import { runTool } from "../invoke.js";
  */
 const TOOL_NAME = "strata_health";
 
+/**
+ * Long enough for a correlation id or short label, short enough that the field
+ * cannot be used to smuggle content into a diagnostic.
+ */
+const MAX_ECHO_LENGTH = 200;
+
 const inputShape = {
   /** Echoed back verbatim, so a caller can correlate a response with its request. */
-  echo: z.string().max(200).optional(),
+  echo: z.string().max(MAX_ECHO_LENGTH).optional(),
 };
 
 const outputShape = {
@@ -31,10 +37,13 @@ export function registerHealthTool(server: McpServer, deps: ToolDeps): void {
     TOOL_NAME,
     {
       title: "Strata health",
+      // A description is judged by the calls it produces (DD-018). An earlier draft
+      // read "useful for confirming the connection before relying on memory tools",
+      // which is an instruction to burn a round trip at the top of every session.
       description:
-        "Report whether the Strata memory server is reachable and which corpus " +
-        "version it is serving. Useful for confirming the connection before " +
-        "relying on memory tools; not a memory operation itself.",
+        "Diagnostic only: reports whether the Strata memory server is reachable. " +
+        "Do not call this while answering a user request — it stores and retrieves " +
+        "nothing. Use it only when explicitly asked to check the connection.",
       inputSchema: inputShape,
       outputSchema: outputShape,
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },

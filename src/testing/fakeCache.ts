@@ -12,6 +12,12 @@ import { StrataError } from "../errors.js";
 export interface FakeCache extends Cache {
   /** Every key written, in insertion order. */
   readonly keys: readonly string[];
+  /**
+   * Method names invoked, in order. Needed because hits/misses only move on
+   * `getRecall`, so their sum cannot distinguish "was not called" from "was called
+   * but read nothing" — which makes any assertion built on it unfalsifiable.
+   */
+  readonly calls: readonly (keyof Cache)[];
   readonly hits: number;
   readonly misses: number;
   /** Simulates Redis being down: every method rejects with CACHE_UNAVAILABLE. */
@@ -29,6 +35,7 @@ export function createFakeCache(options: FakeCacheOptions = {}): FakeCache {
   const entries = new Map<string, RecallOutput>();
   const keys: string[] = [];
   const failures = new Map<keyof Cache, StrataError>();
+  const calls: (keyof Cache)[] = [];
   let version = options.initialVersion ?? 1;
   let down = options.down ?? false;
   let hits = 0;
@@ -40,6 +47,7 @@ export function createFakeCache(options: FakeCacheOptions = {}): FakeCache {
    * were even started, which is not how the real cache fails.
    */
   async function enter(method: keyof Cache): Promise<void> {
+    calls.push(method);
     await Promise.resolve();
     if (down) {
       throw new StrataError("CACHE_UNAVAILABLE", `fake cache is down (${method})`);
@@ -53,6 +61,9 @@ export function createFakeCache(options: FakeCacheOptions = {}): FakeCache {
   return {
     get keys() {
       return keys;
+    },
+    get calls() {
+      return calls;
     },
     get hits() {
       return hits;

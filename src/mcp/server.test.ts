@@ -128,8 +128,10 @@ describe("schema validation happens before the handler runs", () => {
 
     expect(result.isError).toBe(true);
     expect(textOf(result as CallToolResult)).toContain("validation");
-    // The handler reads the corpus version; a rejected call must not have run it.
-    expect(harness.deps.cache.hits + harness.deps.cache.misses).toBe(0);
+    // The handler's only dependency call is getCorpusVersion, so an empty call log
+    // is direct evidence the handler body never ran. hits+misses cannot show this:
+    // neither moves on getCorpusVersion, so that sum is 0 either way.
+    expect(harness.deps.cache.calls).toEqual([]);
   });
 
   it("rejects an argument that violates a schema constraint", async () => {
@@ -205,8 +207,8 @@ describe("dependency injection and degradation", () => {
   });
 });
 
-describe("tool failures surface as isError, not as a thrown protocol fault", () => {
-  it("maps a StrataError to an error result carrying its code", async () => {
+describe("a cache failure degrades rather than failing the call", () => {
+  it("serves a degraded result when getCorpusVersion rejects", async () => {
     const harness = await connect();
     // Something the health tool does not guard: the failure must still be caught by
     // the shared wrapper rather than escaping as a protocol error.
