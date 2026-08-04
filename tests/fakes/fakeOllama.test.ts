@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ENHANCEMENT_TIMEOUT_MS } from "../../src/config.js";
+import { ENHANCEMENT_TIMEOUT_MS } from "../../src/config/budgets.js";
 import { isStrataError } from "../../src/errors.js";
 import { assertEmbeddingDimensions, EMBEDDING_DIMENSIONS } from "../../src/ollama/embedding.js";
 import { compressionJsonSchema, parseCompressionResult } from "../../src/ollama/parse.js";

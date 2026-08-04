@@ -1,5 +1,5 @@
 import type { Cache } from "../cache/types.js";
-import type { Config } from "../config.js";
+import type { Config } from "../config/env.js";
 import { describeUnknown } from "../errors.js";
 import type { Logger } from "../logger.js";
 import type { Ollama } from "../ollama/types.js";

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { loadConfig } from "../src/config.js";
-import { isStrataError } from "../src/errors.js";
+import { loadConfig } from "../../src/config/env.js";
+import { isStrataError } from "../../src/errors.js";
 
 const valid = {
   POSTGRES_URL: "postgres://strata:strata@localhost:5432/strata",

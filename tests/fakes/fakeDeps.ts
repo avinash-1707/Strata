@@ -1,4 +1,4 @@
-import type { Config } from "../../src/config.js";
+import type { Config } from "../../src/config/env.js";
 import { describeUnknown } from "../../src/errors.js";
 import type { Logger } from "../../src/logger.js";
 import { createSilentLogger } from "../../src/logger.js";
