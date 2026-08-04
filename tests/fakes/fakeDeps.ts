@@ -2,7 +2,7 @@ import type { Config } from "../../src/config/env.js";
 import { describeUnknown } from "../../src/errors.js";
 import type { Logger } from "../../src/logger.js";
 import { createSilentLogger } from "../../src/logger.js";
-import type { BackgroundRunner, ToolDeps } from "../../src/mcp/deps.js";
+import type { BackgroundRunner, ToolDeps } from "../../src/deps.js";
 import type { FakeCache, FakeCacheOptions } from "./fakeCache.js";
 import { createFakeCache } from "./fakeCache.js";
 import type { FakeOllama, FakeOllamaOptions } from "./fakeOllama.js";

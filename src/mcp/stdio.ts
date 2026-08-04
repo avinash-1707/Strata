@@ -2,7 +2,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 
 import { describeUnknown } from "../errors.js";
 import type { Logger } from "../logger.js";
-import type { ToolDeps } from "./deps.js";
+import type { ToolDeps } from "../deps.js";
 import { createStrataServer, SERVER_NAME, SERVER_VERSION } from "./server.js";
 
 export interface ServeStdioOptions {

@@ -273,7 +273,7 @@ describe("stdio transport: a real MCP client over a real pipe", { timeout: START
     });
 
     expect(result.isError).toBeFalsy();
-    expect(result.structuredContent).toMatchObject({ ok: true, echo: "over-stdio" });
+    expect(result.structuredContent).toMatchObject({ cache: "up", echo: "over-stdio" });
   });
 
   it("validates arguments in the spawned process too", async () => {

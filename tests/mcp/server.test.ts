@@ -83,7 +83,6 @@ describe("a real MCP client against the server", () => {
     expect(result.isError).toBeFalsy();
     expect(textOf(result as CallToolResult)).toContain("Strata is up");
     expect(result.structuredContent).toMatchObject({
-      ok: true,
       cache: "up",
       corpus_version: 1,
       compaction_enabled: false,
@@ -184,8 +183,9 @@ describe("dependency injection and degradation", () => {
       const result = await harness.client.callTool({ name: "strata_health", arguments: {} });
 
       expect(result.isError).toBeFalsy();
+      // A field that can only ever be `true` carries no information, so there is no
+      // `ok`: a served response is itself the signal.
       expect(result.structuredContent).toMatchObject({
-        ok: true,
         cache: "down",
         corpus_version: null,
       });

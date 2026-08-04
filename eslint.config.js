@@ -168,8 +168,45 @@ export default tseslint.config(
     },
   },
   {
-    /* Tools compose domain operations; SQL and the raw pool stay below them
-       (DD-032). A tool holding SQL is the defect this rule exists to catch. */
+    /* Domain tools must be reachable from any surface, so they may not depend on one.
+       This is what lets MCP and HTTP share a single implementation (DD-032). */
+    files: ["src/tools/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/mcp/**", "**/http/**", "**/db/**", "**/store/pg/**"],
+              message:
+                "src/tools is surface-agnostic domain logic. It must not import a surface (mcp, http), the pg pool, or the Postgres store — surfaces call tools, never the reverse.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    /* The HTTP surface gets the same restrictions as the MCP surface. */
+    files: ["src/http/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/mcp/**", "**/db/**", "**/store/pg/**"],
+              message:
+                "A surface receives a MemoryStore through ToolDeps and calls src/tools. It must not import the pg pool, the Postgres store, or the other surface.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    /* Surfaces compose domain operations; SQL and the raw pool stay below them
+       (DD-032). A surface holding SQL is the defect this rule exists to catch. */
     files: ["src/mcp/**/*.ts"],
     rules: {
       "no-restricted-imports": [
@@ -177,7 +214,7 @@ export default tseslint.config(
         {
           patterns: [
             {
-              group: ["**/db/**", "**/store/pg/**", "**/../tests/**"],
+              group: ["**/db/**", "**/store/pg/**", "**/http/**", "**/../tests/**"],
               message:
                 "A surface receives a MemoryStore through ToolDeps. It must not import the pg pool, the Postgres store implementation, or a test fake.",
             },

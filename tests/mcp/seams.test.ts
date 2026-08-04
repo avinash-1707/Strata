@@ -7,7 +7,11 @@ import { describe, expect, it } from "vitest";
 const SRC = fileURLToPath(new URL("../../src/", import.meta.url));
 
 async function filesUnder(directory: string): Promise<string[]> {
-  const entries = await readdir(directory, { withFileTypes: true, recursive: true });
+  // A directory that does not exist yet (src/http before Phase 12) is vacuously
+  // clean, but must not make the check silently skip once it does exist.
+  const entries = await readdir(directory, { withFileTypes: true, recursive: true }).catch(
+    () => [],
+  );
   return entries
     .filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
     .map((entry) => join(entry.parentPath, entry.name));
@@ -57,8 +61,8 @@ async function sqlOffendersIn(directory: string): Promise<string[]> {
 }
 
 describe("no SQL above the store layer (DD-032, coding-standards §8)", () => {
-  it("finds no SQL in the MCP surface", async () => {
-    await expect(sqlOffendersIn("mcp")).resolves.toEqual([]);
+  it.each([["mcp"], ["http"], ["tools"]])("finds no SQL in src/%s", async (directory) => {
+    await expect(sqlOffendersIn(directory)).resolves.toEqual([]);
   });
 
   it("finds no SQL in the search layer, which keeps only pure fusion", async () => {

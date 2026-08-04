@@ -11,7 +11,7 @@
  */
 import { isLogLevel } from "../../src/logger.js";
 import { createLogger } from "../../src/logger.js";
-import { createBackgroundRunner } from "../../src/mcp/deps.js";
+import { createBackgroundRunner } from "../../src/deps.js";
 import { serveStdio } from "../../src/mcp/stdio.js";
 import { createFakeDeps } from "../fakes/fakeDeps.js";
 

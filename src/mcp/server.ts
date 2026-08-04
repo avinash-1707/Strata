@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-import type { ToolDeps } from "./deps.js";
+import type { ToolDeps } from "../deps.js";
 import { registerHealthTool } from "./tools/health.js";
 
 export const SERVER_NAME = "strata";
