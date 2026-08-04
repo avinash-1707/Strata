@@ -164,6 +164,55 @@ describe("fake store: writes", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("restores a forgotten row, making it visible to every read again (DD-039)", async () => {
+    const store = createFakeStore({ rows: [{ id: "a", summary: "redis notes", tags: ["db"] }] });
+
+    await store.softDelete("a");
+    await expect(store.searchLexical("redis", { limit: LIMIT })).resolves.toEqual([]);
+
+    await expect(store.restore("a")).resolves.toBe(true);
+    const hits = await store.searchLexical("redis", { limit: LIMIT });
+    expect(hits.map((hit) => hit.memory.id)).toEqual(["a"]);
+    expect(store.rows[0]?.deletedAt).toBeNull();
+  });
+
+  it("reports false for a row that was never deleted — nothing to undo", async () => {
+    const store = createFakeStore({ rows: [{ id: "a", summary: "x" }] });
+    await expect(store.restore("a")).resolves.toBe(false);
+  });
+
+  it("reports false for an unknown id", async () => {
+    const store = createFakeStore();
+    await expect(store.restore("ghost")).resolves.toBe(false);
+  });
+
+  /* Resurrecting a compaction input would duplicate content its merged replacement
+     already covers, so restore is scoped to forget, not to supersession (DD-012). */
+  it("refuses to restore a superseded row", async () => {
+    const store = createFakeStore({
+      rows: [
+        { id: "merged", summary: "postgres notes" },
+        {
+          id: "input",
+          summary: "postgres notes",
+          supersededBy: "merged",
+          deletedAt: new Date(),
+        },
+      ],
+    });
+
+    await expect(store.restore("input")).resolves.toBe(false);
+    const hits = await store.searchLexical("postgres", { limit: LIMIT });
+    expect(hits.map((hit) => hit.memory.id)).toEqual(["merged"]);
+  });
+
+  it("is idempotent — restoring twice is not an error", async () => {
+    const store = createFakeStore({ rows: [{ id: "a", summary: "x" }] });
+    await store.softDelete("a");
+    await expect(store.restore("a")).resolves.toBe(true);
+    await expect(store.restore("a")).resolves.toBe(false);
+  });
+
   it("reports whether a soft delete matched a live row", async () => {
     const store = createFakeStore({ rows: [{ id: "a", summary: "x" }] });
     await expect(store.softDelete("a")).resolves.toBe(true);
@@ -285,6 +334,7 @@ describe("fake store: setDown covers the Postgres-down row of the failure table"
     await expect(store.touchUsage(["a"])).rejects.toSatisfy(isDbFailure);
     await expect(store.softDelete("a")).rejects.toSatisfy(isDbFailure);
     await expect(store.findEnhancementBacklog(LIMIT)).rejects.toSatisfy(isDbFailure);
+    await expect(store.restore("a")).rejects.toSatisfy(isDbFailure);
     await expect(
       store.applyEnhancement("a", { summary: "s", tags: [], embedding: null, embeddingModel: null }),
     ).rejects.toSatisfy(isDbFailure);

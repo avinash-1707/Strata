@@ -42,6 +42,17 @@ export interface MemoryStore {
   softDelete(id: string): Promise<boolean>;
 
   /**
+   * Inverse of `softDelete` (DD-039). Clears `deleted_at`, and only for rows where
+   * `superseded_by is null`: resurrecting a compaction input would duplicate content
+   * its merged replacement already covers. `false` means no restorable row — which is
+   * also the answer for a row that was never deleted.
+   *
+   * The caller bumps the corpus version, as it does for `forget`. A restored memory is
+   * visible again, so any cached recall that omitted it is stale (DD-010).
+   */
+  restore(id: string): Promise<boolean>;
+
+  /**
    * DD-005 stage 3: rows left at `raw` or awaiting an embedding, **oldest first**.
    * Named `find`, not `claim`: it takes no lock, which is correct for a
    * single-process server but must not be mistaken for `for update skip locked`.

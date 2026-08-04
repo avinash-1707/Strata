@@ -355,6 +355,19 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
       return true;
     },
 
+    async restore(id) {
+      await enter("restore");
+      // Searches `rows`, not `live()`: the row being restored is by definition not live.
+      const current = rows.find(
+        (row) => row.id === id && row.deletedAt !== null && row.supersededBy === null,
+      );
+      if (current === undefined) {
+        return false;
+      }
+      replace(id, { ...current, deletedAt: null });
+      return true;
+    },
+
     async findEnhancementBacklog(limit) {
       await enter("findEnhancementBacklog");
       return live()

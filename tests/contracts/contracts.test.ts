@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { MAX_CONTENT_LENGTH, MAX_TAGS_PER_CALL } from "../../src/contracts/common.js";
-import { forgetInputSchema } from "../../src/contracts/forget.js";
+import { forgetInputSchema, restoreInputSchema, restoreOutputSchema } from "../../src/contracts/forget.js";
 import {
   DEFAULT_RECALL_K,
   MAX_RECALL_K,
@@ -145,5 +145,17 @@ describe("forget input", () => {
     for (const id of ["", "123", "not-a-uuid", `${UUID}x`]) {
       expect(forgetInputSchema.safeParse({ id }).success).toBe(false);
     }
+  });
+});
+
+describe("restore input (DD-039)", () => {
+  it("requires a uuid, like forget", () => {
+    expect(restoreInputSchema.parse({ id: UUID })).toEqual({ id: UUID });
+    expect(restoreInputSchema.safeParse({ id: "nope" }).success).toBe(false);
+  });
+
+  it("reports a boolean outcome, so a no-op is distinguishable from a restore", () => {
+    expect(restoreOutputSchema.parse({ restored: false })).toEqual({ restored: false });
+    expect(restoreOutputSchema.safeParse({}).success).toBe(false);
   });
 });
