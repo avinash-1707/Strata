@@ -51,7 +51,7 @@ These hold for every code change. Details in `docs/coding-standards.md`.
    and fails loud; compression/embedding degrade to `status:'raw'`. Cache and
    synthesis failures must still serve a useful result (DD-005).
 6. Every read filters `superseded_by is null and deleted_at is null` (DD-012).
-7. Logging goes to **stderr** — stdout is the MCP protocol channel (DD-002).
+7. Logging goes to **stderr** — stdout is the MCP protocol channel (DD-026).
 8. Parameterized SQL only. No `select *`. Never assume a row exists.
 9. Named constants with a justifying comment instead of magic numbers.
 10. Don't build for non-goals: no multi-user, no scale-out, no cloud. See
