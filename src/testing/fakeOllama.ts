@@ -1,6 +1,12 @@
 import { StrataError } from "../errors.js";
 import { assertEmbeddingDimensions, EMBEDDING_DIMENSIONS } from "../ollama/embedding.js";
-import type { Embedding, EmbeddingKind, GenerateOptions, Ollama } from "../ollama/types.js";
+import type {
+  Embedding,
+  EmbeddingKind,
+  GenerateOptions,
+  ModelCallOptions,
+  Ollama,
+} from "../ollama/types.js";
 
 /**
  * An in-memory `Ollama` whose failure modes are selected rather than simulated.
@@ -9,7 +15,11 @@ import type { Embedding, EmbeddingKind, GenerateOptions, Ollama } from "../ollam
  * the tool logic under test.
  */
 export interface FakeOllama extends Ollama {
-  readonly embedCalls: readonly { text: string; kind: EmbeddingKind }[];
+  readonly embedCalls: readonly {
+    text: string;
+    kind: EmbeddingKind;
+    options: ModelCallOptions | undefined;
+  }[];
   readonly generateCalls: readonly { prompt: string; options: GenerateOptions | undefined }[];
   setEmbedMode(mode: EmbedMode): void;
   setGenerateMode(mode: GenerateMode): void;
@@ -53,7 +63,8 @@ export interface FakeOllamaOptions {
 const DEFAULT_MODEL = "fake-embed-text";
 
 export function createFakeOllama(options: FakeOllamaOptions = {}): FakeOllama {
-  const embedCalls: { text: string; kind: EmbeddingKind }[] = [];
+  const embedCalls: { text: string; kind: EmbeddingKind; options: ModelCallOptions | undefined }[] =
+    [];
   const generateCalls: { prompt: string; options: GenerateOptions | undefined }[] = [];
   const model = options.model ?? DEFAULT_MODEL;
   const compression = options.compression ?? {
@@ -107,8 +118,8 @@ export function createFakeOllama(options: FakeOllamaOptions = {}): FakeOllama {
       };
     },
 
-    async embed(text, kind): Promise<Embedding> {
-      embedCalls.push({ text, kind });
+    async embed(text, kind, callOptions): Promise<Embedding> {
+      embedCalls.push({ text, kind, options: callOptions });
       if (embedGate !== undefined) {
         await embedGate;
       }
@@ -171,8 +182,11 @@ export function createFakeOllama(options: FakeOllamaOptions = {}): FakeOllama {
 }
 
 /**
- * Same text in, same vector out, and different texts land in different directions
- * — enough for cosine ordering to be meaningful and reproducible without a model.
+ * Reproducible, and nothing more. The directions are pseudorandom, so cosine
+ * between any two of these vectors sits at 0 ± 1/√768 regardless of how similar the
+ * texts are — there is no semantic relationship to exploit. Any test about semantic
+ * *ordering* must use `FakeStoreOptions.semanticRanking` instead of expecting
+ * related texts to rank together.
  */
 function deterministicVector(text: string, length: number): number[] {
   let seed = 2166136261;

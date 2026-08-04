@@ -47,8 +47,12 @@ export interface MemoryStore {
   /** DD-012: soft delete. `false` means no live row had that id. */
   softDelete(id: string): Promise<boolean>;
 
-  /** DD-005 stage 3: rows left at `raw` or awaiting an embedding. */
-  claimEnhancementBacklog(limit: number): Promise<readonly MemoryRecord[]>;
+  /**
+   * DD-005 stage 3: rows left at `raw` or awaiting an embedding, **oldest first**.
+   * Named `find`, not `claim`: it takes no lock, which is correct for a
+   * single-process server but must not be mistaken for `for update skip locked`.
+   */
+  findEnhancementBacklog(limit: number): Promise<readonly MemoryRecord[]>;
 }
 
 /**
@@ -98,10 +102,14 @@ export interface SearchOptions {
   readonly sessionId?: string;
 }
 
+/**
+ * Ordered best-first. Rank is *position*, and is deliberately not a field: RRF
+ * derives it from the array index anyway, so storing it would create a second
+ * source of truth that no query can be made to guarantee — a tie in `ts_rank_cd`
+ * or a post-filter would silently disagree with the order.
+ */
 export interface RankedMemory {
   readonly memory: MemoryRecord;
-  /** 1-based position in this ranker's output. RRF consumes rank, not score. */
-  readonly rank: number;
-  /** Raw cosine, from the semantic ranker only. */
+  /** Raw cosine, from the semantic ranker only (DD-033). */
   readonly similarity?: number;
 }

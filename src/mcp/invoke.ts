@@ -1,7 +1,7 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
-import { describeUnknown, isStrataError } from "../errors.js";
-import type { Logger } from "../logger.js";
+import { describeUnknown, isStrataError, publicMessageOf } from "../errors.js";
+import type { LogContext, Logger } from "../logger.js";
 
 /**
  * What a tool produces: the typed value for `structuredContent`, plus the text an
@@ -12,6 +12,13 @@ import type { Logger } from "../logger.js";
 export interface ToolPayload<T> {
   readonly structured: T;
   readonly text: string;
+  /**
+   * Merged into this call's single log line — result count, cache hit/miss, and
+   * `remember`'s resulting status. It travels with the payload so that a tool never
+   * has to emit a second line, which would make a log aggregator see two records
+   * per invocation.
+   */
+  readonly log?: LogContext;
 }
 
 /**
@@ -34,7 +41,7 @@ export async function runTool<T extends Record<string, unknown>>(
   try {
     const payload = await work();
     log.info(
-      { tool: name, outcome: "ok", durationMs: elapsed(startedAt) },
+      { ...payload.log, tool: name, outcome: "ok", durationMs: elapsed(startedAt) },
       "tool call completed",
     );
     return {
@@ -43,6 +50,10 @@ export async function runTool<T extends Record<string, unknown>>(
     };
   } catch (error: unknown) {
     const code = isStrataError(error) ? error.code : "UNEXPECTED";
+
+    // The full cause goes to stderr only. It is the diagnosis, and it is also the
+    // one place a Postgres error's statement text, parameter values, or a DSN's
+    // credentials can appear.
     log.error(
       {
         tool: name,
@@ -53,10 +64,9 @@ export async function runTool<T extends Record<string, unknown>>(
       },
       "tool call failed",
     );
+
     return {
-      // The code travels with the message: it is the one piece of a failure an
-      // agent can act on, and it is otherwise invisible over the wire.
-      content: [{ type: "text", text: `${name} failed [${code}]: ${describeUnknown(error)}` }],
+      content: [{ type: "text", text: `${name} failed [${code}]: ${publicMessageOf(error)}` }],
       isError: true,
     };
   }

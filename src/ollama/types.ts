@@ -4,8 +4,19 @@
  * not load-bearing, so every caller degrades rather than fails (DD-005).
  */
 export interface Ollama {
-  embed(text: string, kind: EmbeddingKind): Promise<Embedding>;
+  embed(text: string, kind: EmbeddingKind, options?: ModelCallOptions): Promise<Embedding>;
   generate(prompt: string, options?: GenerateOptions): Promise<string>;
+}
+
+/**
+ * Both calls take a caller-supplied budget because there are two different ones.
+ * `OLLAMA_TIMEOUT_MS` bounds a single call generously, since CPU-bound generation
+ * is slow (DD-028). DD-005 stage 2 needs a much tighter bound: it runs inline on
+ * the write path, and a slow model there should degrade to `status: 'raw'` in
+ * seconds rather than hold the agent for the full per-call ceiling.
+ */
+export interface ModelCallOptions {
+  readonly timeoutMs?: number;
 }
 
 /**
@@ -24,7 +35,7 @@ export interface Embedding {
   readonly model: string;
 }
 
-export interface GenerateOptions {
+export interface GenerateOptions extends ModelCallOptions {
   /**
    * A JSON Schema for Ollama's structured-output `format`, not `format: "json"`
    * (DD-006). Absent for synthesis, which returns prose.
@@ -32,5 +43,4 @@ export interface GenerateOptions {
   readonly format?: Record<string, unknown>;
   /** Defaults to 0 for compression: determinism matters more than creativity. */
   readonly temperature?: number;
-  readonly timeoutMs?: number;
 }

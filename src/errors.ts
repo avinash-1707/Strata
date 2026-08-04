@@ -17,6 +17,12 @@ export interface StrataErrorOptions {
   readonly cause?: unknown;
   /** Log context. Must never contain secrets or memory content. */
   readonly details?: Record<string, unknown>;
+  /**
+   * The part of `message` safe to send to an agent. Set whenever `message` embeds
+   * text from a driver or a model, because that text carries statements, parameter
+   * values, and connection credentials.
+   */
+  readonly publicMessage?: string;
 }
 
 export class StrataError extends Error {
@@ -26,6 +32,7 @@ export class StrataError extends Error {
   // optional property rejects an explicitly-undefined value, which is what
   // `options?.details` produces.
   readonly details: Record<string, unknown> | undefined;
+  readonly publicMessage: string | undefined;
 
   constructor(
     code: StrataErrorCode,
@@ -35,7 +42,19 @@ export class StrataError extends Error {
     super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.code = code;
     this.details = options?.details;
+    this.publicMessage = options?.publicMessage;
   }
+}
+
+/**
+ * The text that may cross the MCP boundary. `message` is for stderr: it can embed a
+ * cause, and a tool result is read by a model and kept in a client transcript.
+ */
+export function publicMessageOf(error: unknown): string {
+  if (isStrataError(error)) {
+    return error.publicMessage ?? error.message;
+  }
+  return "an unexpected internal error occurred";
 }
 
 export function isStrataError(value: unknown): value is StrataError {
@@ -82,6 +101,9 @@ export function wrapError(
   }
   return new StrataError(code, `${message}: ${describeUnknown(cause)}`, {
     cause,
+    // Only the authored prefix is public: the interpolated cause is a driver's
+    // text, which carries statements, parameter values, and DSN credentials.
+    publicMessage: message,
     ...(details === undefined ? {} : { details }),
   });
 }

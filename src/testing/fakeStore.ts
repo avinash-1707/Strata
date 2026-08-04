@@ -1,4 +1,4 @@
-import type { StrataError } from "../errors.js";
+import { StrataError } from "../errors.js";
 import type {
   Enhancement,
   MemoryRecord,
@@ -22,6 +22,13 @@ export interface FakeStore extends MemoryStore {
   readonly touched: readonly string[];
   /** Method names invoked, in order. */
   readonly calls: readonly (keyof MemoryStore)[];
+  /**
+   * Fails *every* method with `DB_QUERY_FAILED` — the "Postgres down" row of the
+   * failure-mode table, where all four tools fail. Kept separate from `setFailure`
+   * because failing a single method is a different row entirely (one search path
+   * down, the other still serving), and the two are easy to conflate.
+   */
+  setDown(down: boolean): void;
   /** Makes one method reject from now on. `undefined` clears it. */
   setFailure(method: keyof MemoryStore, error: StrataError | undefined): void;
   /**
@@ -54,6 +61,7 @@ export interface SeedMemory {
 
 export interface FakeStoreOptions {
   readonly rows?: readonly SeedMemory[];
+  readonly down?: boolean;
   /**
    * Overrides lexical ranking with a fixed id order, for tests about fusion
    * rather than about matching.
@@ -77,6 +85,7 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
   const gates = new Map<keyof MemoryStore, Promise<void>>();
   const lexicalOrder = options.lexicalRanking;
   const semanticOrder = options.semanticRanking;
+  let down = options.down ?? false;
   let nextId = 1;
 
   function seed(seeds: readonly SeedMemory[]): MemoryRecord[] {
@@ -92,6 +101,7 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
         embeddingModel: seed.embeddingModel ?? "fake-embed",
         tags: [...(seed.tags ?? [])],
         sessionId: seed.sessionId ?? null,
+        // Matches the column default; nothing writes importance yet.
         importance: 3,
         recallCount: seed.recallCount ?? 0,
         compactionDepth: seed.compactionDepth ?? 0,
@@ -131,6 +141,9 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
     if (gate !== undefined) {
       await gate;
     }
+    if (down) {
+      throw new StrataError("DB_QUERY_FAILED", `fake store is down (${method})`);
+    }
     const failure = failures.get(method);
     if (failure !== undefined) {
       throw failure;
@@ -146,15 +159,23 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
     const ordered =
       order === undefined
         ? matches
-        : order
-            .map((id) => matches.find((row) => row.id === id))
-            .filter((row): row is MemoryRecord => row !== undefined);
+        : order.map((id) => {
+            const found = matches.find((row) => row.id === id);
+            if (found === undefined) {
+              // Silently dropping it would leave a fusion test quietly fusing empty
+              // lists and passing for no reason.
+              throw new Error(
+                `fake store: ranking override names ${id}, which is not a live matching row`,
+              );
+            }
+            return found;
+          });
 
     return ordered.slice(0, limit).map((memory, index) => ({
       memory,
-      rank: index + 1,
-      // Descending and bounded, so a caller cannot mistake it for a real cosine.
-      ...(withSimilarity ? { similarity: 1 - index * 0.05 } : {}),
+      // Strictly descending and always within (0, 1], so it behaves like a cosine
+      // for ordering assertions without ever being mistaken for a measured one.
+      ...(withSimilarity ? { similarity: 1 / (index + 1) } : {}),
     }));
   }
 
@@ -177,6 +198,10 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
       return calls;
     },
 
+    setDown(next) {
+      down = next;
+    },
+
     setFailure(method, error) {
       if (error === undefined) {
         failures.delete(method);
@@ -187,14 +212,17 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
 
     block(method) {
       let release = (): void => undefined;
-      gates.set(
-        method,
-        new Promise<void>((resolve) => {
-          release = resolve;
-        }),
-      );
+      const mine = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      gates.set(method, mine);
       return () => {
-        gates.delete(method);
+        // Only clear the gate if it is still ours: a second block() on the same
+        // method replaced it, and deleting that one would unblock a call the test
+        // still means to be holding.
+        if (gates.get(method) === mine) {
+          gates.delete(method);
+        }
         release();
       };
     },
@@ -210,8 +238,10 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
       await enter("insertRaw");
       const existing = live().find((row) => row.contentHash === memory.contentHash);
       if (existing !== undefined) {
-        // Mirrors the real store's `on conflict`-style idempotency (DD-020); a
-        // fake that happily inserted a duplicate would hide that bug.
+        // Mirrors the partial unique index on (content_hash) over live rows that
+        // migration 001 must carry (DD-032 item 11). Without that index this branch
+        // would be a lie: the fake would absorb a double insert that real Postgres
+        // turns into two live rows.
         return existing;
       }
       const record: MemoryRecord = {
@@ -290,6 +320,9 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
 
     async searchByTag(tags, match, limit) {
       await enter("searchByTag");
+      // `match: "all"` with an empty tag list matches every row, exactly as
+      // `tags @> '{}'` does. Faithful, and therefore a real footgun: the tool's
+      // input schema is what must require at least one tag.
       const wanted = new Set(tags);
       return live()
         .filter((row) =>
@@ -323,10 +356,13 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
       return true;
     },
 
-    async claimEnhancementBacklog(limit) {
-      await enter("claimEnhancementBacklog");
+    async findEnhancementBacklog(limit) {
+      await enter("findEnhancementBacklog");
       return live()
         .filter((row) => row.status === "raw" || row.needsEmbedding)
+        // Oldest first, so a row that always fails cannot hold a slot forever and
+        // starve everything behind it.
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
         .slice(0, limit);
     },
   };
@@ -351,8 +387,16 @@ function countHits(row: MemoryRecord, terms: readonly string[]): number {
 }
 
 function cosine(a: readonly number[], b: readonly number[] | undefined): number | undefined {
-  if (b === undefined || a.length !== b.length) {
+  if (b === undefined) {
     return undefined;
+  }
+  if (a.length !== b.length) {
+    // pgvector *errors* on a width mismatch rather than skipping the row. Silently
+    // dropping it here would let a Phase 3 path pass and then fail in Phase 4.
+    throw new StrataError(
+      "EMBEDDING_DIM_MISMATCH",
+      `query vector has ${String(a.length)} dimensions, stored vector has ${String(b.length)}`,
+    );
   }
   let dot = 0;
   let normA = 0;

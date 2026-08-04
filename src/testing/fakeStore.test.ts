@@ -173,7 +173,8 @@ describe("fake store: writes", () => {
 });
 
 describe("fake store: lexical search", () => {
-  it("ranks by number of matching terms, from 1", async () => {
+  // Rank is array position, not a field — fusion derives it from the index.
+  it("orders by number of matching terms, best first", async () => {
     const store = createFakeStore({
       rows: [
         { id: "both", summary: "redis cache invalidation" },
@@ -182,10 +183,7 @@ describe("fake store: lexical search", () => {
     });
 
     const hits = await store.searchLexical("redis cache", { limit: LIMIT });
-    expect(hits.map((hit) => [hit.memory.id, hit.rank])).toEqual([
-      ["both", 1],
-      ["one", 2],
-    ]);
+    expect(hits.map((hit) => hit.memory.id)).toEqual(["both", "one"]);
   });
 
   it("returns no similarity, because a lexical hit has no cosine (DD-033)", async () => {
@@ -229,6 +227,73 @@ describe("fake store: lexical search", () => {
 
     const hits = await store.searchLexical("redis", { limit: LIMIT, sessionId: "s1" });
     expect(hits.map((hit) => hit.memory.id)).toEqual(["mine"]);
+  });
+});
+
+describe("fake store: ranking overrides, for tests about fusion rather than matching", () => {
+  const rows = [
+    { id: "a", summary: "redis", embedding: vector(1) },
+    { id: "b", summary: "redis", embedding: vector(2) },
+    { id: "c", summary: "redis", embedding: vector(3) },
+  ];
+
+  it("imposes the given order on lexical results", async () => {
+    const store = createFakeStore({ rows, lexicalRanking: ["c", "a"] });
+    const hits = await store.searchLexical("redis", { limit: LIMIT });
+    expect(hits.map((hit) => hit.memory.id)).toEqual(["c", "a"]);
+  });
+
+  it("imposes the given order on semantic results, keeping similarity descending", async () => {
+    const store = createFakeStore({ rows, semanticRanking: ["b", "c"] });
+    const hits = await store.searchSemantic(vector(1), { limit: LIMIT });
+
+    expect(hits.map((hit) => hit.memory.id)).toEqual(["b", "c"]);
+    expect(hits[0]?.similarity).toBeGreaterThan(hits[1]?.similarity ?? 1);
+  });
+
+  it("still honors the limit", async () => {
+    const store = createFakeStore({ rows, lexicalRanking: ["c", "b", "a"] });
+    await expect(store.searchLexical("redis", { limit: 2 })).resolves.toHaveLength(2);
+  });
+
+  /* A silent drop here would leave a fusion test fusing empty lists and passing. */
+  it("throws when the override names a row the query does not match", async () => {
+    const store = createFakeStore({ rows, lexicalRanking: ["a", "ghost"] });
+    await expect(store.searchLexical("redis", { limit: LIMIT })).rejects.toThrow(/ghost/);
+  });
+
+  it("throws when the override names a forgotten row", async () => {
+    const store = createFakeStore({ rows, lexicalRanking: ["a", "b"] });
+    await store.softDelete("b");
+    await expect(store.searchLexical("redis", { limit: LIMIT })).rejects.toThrow(/\bb\b/);
+  });
+});
+
+describe("fake store: setDown covers the Postgres-down row of the failure table", () => {
+  it("fails every method with DB_QUERY_FAILED", async () => {
+    const store = createFakeStore({ rows: [{ id: "a", summary: "redis" }], down: true });
+    const isDbFailure = (error: unknown): boolean =>
+      isStrataError(error) && error.code === "DB_QUERY_FAILED";
+
+    await expect(store.findLiveByContentHash("h")).rejects.toSatisfy(isDbFailure);
+    await expect(
+      store.insertRaw({ summary: "s", rawContent: "c", contentHash: "h", tags: [], sessionId: null }),
+    ).rejects.toSatisfy(isDbFailure);
+    await expect(store.searchLexical("redis", { limit: LIMIT })).rejects.toSatisfy(isDbFailure);
+    await expect(store.searchSemantic(vector(1), { limit: LIMIT })).rejects.toSatisfy(isDbFailure);
+    await expect(store.searchByTag(["x"], "any", LIMIT)).rejects.toSatisfy(isDbFailure);
+    await expect(store.touchUsage(["a"])).rejects.toSatisfy(isDbFailure);
+    await expect(store.softDelete("a")).rejects.toSatisfy(isDbFailure);
+    await expect(store.findEnhancementBacklog(LIMIT)).rejects.toSatisfy(isDbFailure);
+    await expect(
+      store.applyEnhancement("a", { summary: "s", tags: [], embedding: null, embeddingModel: null }),
+    ).rejects.toSatisfy(isDbFailure);
+  });
+
+  it("can be brought back up", async () => {
+    const store = createFakeStore({ rows: [{ id: "a", summary: "redis" }], down: true });
+    store.setDown(false);
+    await expect(store.searchByTag(["x"], "any", LIMIT)).resolves.toEqual([]);
   });
 });
 
@@ -323,7 +388,7 @@ describe("fake store: backlog (DD-005 stage 3)", () => {
       ],
     });
 
-    const claimed = await store.claimEnhancementBacklog(LIMIT);
+    const claimed = await store.findEnhancementBacklog(LIMIT);
     expect(claimed.map((row) => row.id)).toEqual(["raw", "unembedded"]);
   });
 });

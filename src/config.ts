@@ -9,6 +9,16 @@ import { StrataError } from "./errors.js";
  */
 const DEFAULT_OLLAMA_TIMEOUT_MS = 60_000;
 
+/**
+ * The budget for DD-005 stage 2, deliberately far tighter than the per-call
+ * ceiling above. Stage 2 runs inline on the write path after the memory is already
+ * durable, so a slow model there should degrade to `status: 'raw'` and let the
+ * repair pass retry — not hold the calling agent for a full minute over an
+ * enhancement it does not need to wait for. Not configurable: it is a property of
+ * the write path, not of the deployment.
+ */
+export const ENHANCEMENT_TIMEOUT_MS = 5_000;
+
 /** 32 hex chars ≈ 128 bits, past guessable for a LAN-exposed endpoint (DD-026). */
 const MIN_AUTH_TOKEN_LENGTH = 32;
 
