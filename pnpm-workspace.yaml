@@ -1,0 +1,4 @@
+# esbuild ships a prebuilt native binary and needs its postinstall to place it.
+# It reaches us only through tsx, the dev-only TypeScript runner (DD-034).
+allowBuilds:
+  esbuild: true
