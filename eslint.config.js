@@ -51,6 +51,101 @@ export default tseslint.config(
     },
   },
 
+  /* The module seams from docs/coding-standards.md §4 and DD-032, enforced rather
+     than remembered. Each of these is a boundary whose violation is invisible in
+     review — the code compiles and the tests pass; only the architecture rots. */
+  {
+    files: ["src/db/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/cache/*", "**/ollama/*", "**/store/*", "**/mcp/*", "**/search/*"],
+              message:
+                "src/db must import only pg and config. Any one of db/cache/ollama has to be replaceable without touching the other two — composition belongs in src/mcp/tools.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ["src/cache/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/db/*", "**/ollama/*", "**/store/*", "**/mcp/*", "**/search/*"],
+              message:
+                "src/cache must import only redis and config. See docs/coding-standards.md §4.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ["src/ollama/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/db/*", "**/cache/*", "**/store/*", "**/mcp/*", "**/search/*"],
+              message:
+                "src/ollama must import only fetch and config. See docs/coding-standards.md §4.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    /* The store receives a query vector, never an embedder: letting it reach for
+       Ollama so semanticSearch could embed its own query is exactly how the
+       db/cache/ollama isolation collapses (DD-032). */
+    files: ["src/store/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/cache/*", "**/ollama/*", "**/mcp/*"],
+              message:
+                "src/store owns SQL over memories and nothing else. It must not reach for the cache, a model, or a tool.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    /* Tools compose domain operations; SQL and the raw pool stay below them
+       (DD-032). A tool holding SQL is the defect this rule exists to catch. */
+    files: ["src/mcp/**/*.ts"],
+    ignores: ["src/mcp/**/*.test.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/db/*", "**/store/pg/*", "**/testing/*"],
+              message:
+                "Tools receive a MemoryStore through ToolDeps. They must not import the pg pool, the Postgres store implementation, or a fake.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+
   {
     /* Tests may assert on values the type system can't prove, and may use
        non-null assertions on fixture data that is obviously present. */
