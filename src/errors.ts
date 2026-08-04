@@ -11,6 +11,9 @@ export type StrataErrorCode =
   | "OLLAMA_BAD_RESPONSE"
   | "EMBEDDING_DIM_MISMATCH"
   | "NOT_FOUND"
+  // Distinct from INVALID_INPUT: the caller must re-authenticate, not fix a field.
+  // Only reachable on the HTTP surface — stdio has nothing to authenticate (DD-026).
+  | "UNAUTHORIZED"
   | "INVALID_INPUT";
 
 export interface StrataErrorOptions {

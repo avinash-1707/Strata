@@ -1,6 +1,37 @@
 // @ts-check
 import tseslint from "typescript-eslint";
 
+/**
+ * One complete `no-restricted-imports` block for a directory.
+ *
+ * `forbidden` names sibling directories under src/. `**\/tests/**` is added to every
+ * block because tests/ is not in the build, so importing a fake from production code
+ * fails at runtime rather than at compile time.
+ */
+function seam(directory, forbidden, ignores) {
+  return [
+    {
+      files: [`${directory}/**/*.ts`],
+      ...(ignores === undefined ? {} : { ignores }),
+      rules: {
+        "no-restricted-imports": [
+          "error",
+          {
+            patterns: [
+              {
+                group: [...forbidden.map((name) => `**/${name}/**`), "**/tests/**"],
+                message:
+                  `${directory} may not import: ${forbidden.join(", ")}, or a test fake. ` +
+                  "See docs/coding-standards.md §4 and DD-032.",
+              },
+            ],
+          },
+        ],
+      },
+    },
+  ];
+}
+
 export default tseslint.config(
   { ignores: ["dist/**", "node_modules/**", "coverage/**"] },
 
@@ -52,177 +83,29 @@ export default tseslint.config(
   },
 
   /* The module seams from docs/coding-standards.md §4 and DD-032, enforced rather
-     than remembered. Each of these is a boundary whose violation is invisible in
-     review — the code compiles and the tests pass; only the architecture rots. */
-
-  /* Inbound, not outbound: the rules below say what each directory may import,
-     which leaves the central DD-032 boundary — who may reach the pg pool —
-     unguarded. src/db is importable only from the Postgres store. */
-  {
-    files: ["src/**/*.ts"],
-    ignores: ["src/db/**", "src/store/pg/**"],
-    rules: {
-      "no-restricted-imports": [
-        "error",
-        {
-          patterns: [
-            {
-              group: ["**/db/**"],
-              message:
-                "Only src/store/pg/** may import the pg pool. Everything above the store receives a MemoryStore (DD-032).",
-            },
-          ],
-        },
-      ],
-    },
-  },
-  {
-    files: ["src/db/**/*.ts"],
-    rules: {
-      "no-restricted-imports": [
-        "error",
-        {
-          patterns: [
-            {
-              group: ["**/cache/**", "**/ollama/**", "**/store/**", "**/mcp/**", "**/search/**"],
-              message:
-                "src/db must import only pg and config. Any one of db/cache/ollama has to be replaceable without touching the other two — composition belongs in src/mcp/tools.",
-            },
-          ],
-        },
-      ],
-    },
-  },
-  {
-    files: ["src/cache/**/*.ts"],
-    rules: {
-      "no-restricted-imports": [
-        "error",
-        {
-          patterns: [
-            {
-              group: ["**/db/**", "**/ollama/**", "**/store/**", "**/mcp/**", "**/search/**"],
-              message:
-                "src/cache must import only redis and config. See docs/coding-standards.md §4.",
-            },
-          ],
-        },
-      ],
-    },
-  },
-  {
-    files: ["src/ollama/**/*.ts"],
-    rules: {
-      "no-restricted-imports": [
-        "error",
-        {
-          patterns: [
-            {
-              group: ["**/db/**", "**/cache/**", "**/store/**", "**/mcp/**", "**/search/**"],
-              message:
-                "src/ollama must import only fetch and config. See docs/coding-standards.md §4.",
-            },
-          ],
-        },
-      ],
-    },
-  },
-  {
-    /* The store receives a query vector, never an embedder: letting it reach for
-       Ollama so semanticSearch could embed its own query is exactly how the
-       db/cache/ollama isolation collapses (DD-032). */
-    files: ["src/store/**/*.ts"],
-    ignores: ["src/store/pg/**"],
-    rules: {
-      "no-restricted-imports": [
-        "error",
-        {
-          patterns: [
-            {
-              group: ["**/db/**", "**/cache/**", "**/ollama/**", "**/mcp/**"],
-              message:
-                "src/store owns SQL over memories and nothing else. Only src/store/pg may touch the pg pool, and no part of the store may reach for the cache, a model, or a tool.",
-            },
-          ],
-        },
-      ],
-    },
-  },
-  {
-    /* The one directory permitted to hold SQL and the one permitted to import the
-       pool. Everything else about the store's isolation still applies. */
-    files: ["src/store/pg/**/*.ts"],
-    rules: {
-      "no-restricted-imports": [
-        "error",
-        {
-          patterns: [
-            {
-              group: ["**/cache/**", "**/ollama/**", "**/mcp/**"],
-              message:
-                "src/store/pg owns SQL over memories and nothing else. It must not reach for the cache, a model, or a tool.",
-            },
-          ],
-        },
-      ],
-    },
-  },
-  {
-    /* Domain tools must be reachable from any surface, so they may not depend on one.
-       This is what lets MCP and HTTP share a single implementation (DD-032). */
-    files: ["src/tools/**/*.ts"],
-    rules: {
-      "no-restricted-imports": [
-        "error",
-        {
-          patterns: [
-            {
-              group: ["**/mcp/**", "**/http/**", "**/db/**", "**/store/pg/**"],
-              message:
-                "src/tools is surface-agnostic domain logic. It must not import a surface (mcp, http), the pg pool, or the Postgres store — surfaces call tools, never the reverse.",
-            },
-          ],
-        },
-      ],
-    },
-  },
-  {
-    /* The HTTP surface gets the same restrictions as the MCP surface. */
-    files: ["src/http/**/*.ts"],
-    rules: {
-      "no-restricted-imports": [
-        "error",
-        {
-          patterns: [
-            {
-              group: ["**/mcp/**", "**/db/**", "**/store/pg/**"],
-              message:
-                "A surface receives a MemoryStore through ToolDeps and calls src/tools. It must not import the pg pool, the Postgres store, or the other surface.",
-            },
-          ],
-        },
-      ],
-    },
-  },
-  {
-    /* Surfaces compose domain operations; SQL and the raw pool stay below them
-       (DD-032). A surface holding SQL is the defect this rule exists to catch. */
-    files: ["src/mcp/**/*.ts"],
-    rules: {
-      "no-restricted-imports": [
-        "error",
-        {
-          patterns: [
-            {
-              group: ["**/db/**", "**/store/pg/**", "**/http/**", "**/../tests/**"],
-              message:
-                "A surface receives a MemoryStore through ToolDeps. It must not import the pg pool, the Postgres store implementation, or a test fake.",
-            },
-          ],
-        },
-      ],
-    },
-  },
+     than remembered. Each is a boundary whose violation is invisible in review: the
+     code compiles and the tests pass; only the architecture rots.
+     
+     Flat config *replaces* a rule for overlapping `files` rather than merging, so
+     every block below lists its forbidden imports in full. An earlier version relied
+     on a shared block plus per-directory additions, and the additions silently
+     discarded the shared one — caught only by planting a violation in each
+     directory. Do not refactor this into a base-plus-override. */
+  ...seam("src", ["db", "store/pg", "mcp", "http"]),
+  ...seam("src/search", ["db", "cache", "ollama", "store", "mcp", "http"]),
+  ...seam("src/db", ["cache", "ollama", "store", "search", "mcp", "http"]),
+  ...seam("src/cache", ["db", "ollama", "store", "search", "mcp", "http"]),
+  ...seam("src/ollama", ["db", "cache", "store", "search", "mcp", "http"]),
+  /* The store receives a query vector, never an embedder: letting it reach for Ollama
+     so searchSemantic could embed its own query is how the isolation collapses. */
+  ...seam("src/store", ["db", "cache", "ollama", "mcp", "http"], ["src/store/pg/**"]),
+  /* The one directory allowed to hold SQL and to touch the pool. */
+  ...seam("src/store/pg", ["cache", "ollama", "mcp", "http"]),
+  /* Domain tools must be reachable from any surface, so they may depend on none. */
+  ...seam("src/tools", ["db", "store/pg", "mcp", "http"]),
+  /* Surfaces call tools and receive a MemoryStore through ToolDeps. */
+  ...seam("src/mcp", ["db", "store/pg", "http"]),
+  ...seam("src/http", ["db", "store/pg", "mcp"]),
 
   {
     /* Tests and fakes may assert on values the type system can't prove, may use
