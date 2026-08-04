@@ -4,7 +4,7 @@
  * through a `SonicBoom` destination that bypasses `process.stdout`, so only a
  * separate process with genuinely separate fds gives an honest answer.
  */
-import { createLogger } from "../logger.js";
+import { createLogger } from "../../src/logger.js";
 
 const log = createLogger("debug");
 

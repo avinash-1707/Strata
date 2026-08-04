@@ -1,7 +1,7 @@
-import { composeRecallKey } from "../cache/key.js";
-import type { Cache } from "../cache/types.js";
-import type { RecallOutput } from "../contracts.js";
-import { StrataError } from "../errors.js";
+import { composeRecallKey } from "../../src/cache/key.js";
+import type { Cache } from "../../src/cache/types.js";
+import type { RecallOutput } from "../../src/contracts.js";
+import { StrataError } from "../../src/errors.js";
 
 /**
  * An in-memory `Cache` that composes keys the same way the Redis implementation

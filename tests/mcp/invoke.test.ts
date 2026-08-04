@@ -5,9 +5,9 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
 import { describe, expect, it } from "vitest";
 
-import { StrataError, wrapError } from "../errors.js";
-import type { LogContext, Logger } from "../logger.js";
-import { runTool } from "./invoke.js";
+import { StrataError, wrapError } from "../../src/errors.js";
+import type { LogContext, Logger } from "../../src/logger.js";
+import { runTool } from "../../src/mcp/invoke.js";
 
 interface Line {
   readonly level: "debug" | "info" | "warn" | "error";

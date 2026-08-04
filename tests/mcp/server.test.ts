@@ -3,10 +3,10 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { StrataError } from "../errors.js";
-import type { FakeDeps, FakeDepsOptions } from "../testing/fakeDeps.js";
-import { createFakeDeps } from "../testing/fakeDeps.js";
-import { createStrataServer, SERVER_NAME, SERVER_VERSION } from "./server.js";
+import { StrataError } from "../../src/errors.js";
+import type { FakeDeps, FakeDepsOptions } from "../fakes/fakeDeps.js";
+import { createFakeDeps } from "../fakes/fakeDeps.js";
+import { createStrataServer, SERVER_NAME, SERVER_VERSION } from "../../src/mcp/server.js";
 
 interface Harness {
   readonly client: Client;

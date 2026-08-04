@@ -1,4 +1,11 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["src/**/*.test.ts", "src/testing/**"]
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": true
+  },
+  /* src/ is production code only, so no exclude list is needed — that is the point
+     of keeping tests in tests/. */
+  "include": ["src/**/*.ts"]
 }

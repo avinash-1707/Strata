@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-const SRC = fileURLToPath(new URL("..", import.meta.url));
+const SRC = fileURLToPath(new URL("../../src/", import.meta.url));
 
 async function filesUnder(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true, recursive: true });
@@ -44,34 +44,25 @@ function containsSql(source: string): boolean {
   return SQL_RELATIONS.test(source) && SQL_VERBS.some((pattern) => pattern.test(source));
 }
 
-describe("no SQL above the store layer (DD-032, coding-standards §8)", () => {
-  it("finds no SQL in any tool file", async () => {
-    const files = await filesUnder(join(SRC, "mcp"));
-    const offenders: string[] = [];
-
-    for (const file of files) {
-      if (file.endsWith(".test.ts")) {
-        continue;
-      }
-      const source = await readFile(file, "utf8");
-      if (containsSql(source)) {
-        offenders.push(file.replace(SRC, "src/"));
-      }
+/** `src/` is production-only now that tests live outside it, so no filtering. */
+async function sqlOffendersIn(directory: string): Promise<string[]> {
+  const offenders: string[] = [];
+  for (const file of await filesUnder(join(SRC, directory))) {
+    const source = await readFile(file, "utf8");
+    if (containsSql(source)) {
+      offenders.push(file.replace(SRC, "src/"));
     }
+  }
+  return offenders;
+}
 
-    expect(offenders).toEqual([]);
+describe("no SQL above the store layer (DD-032, coding-standards §8)", () => {
+  it("finds no SQL in the MCP surface", async () => {
+    await expect(sqlOffendersIn("mcp")).resolves.toEqual([]);
   });
 
   it("finds no SQL in the search layer, which keeps only pure fusion", async () => {
-    const files = await filesUnder(join(SRC, "search"));
-    const offenders: string[] = [];
-
-    for (const file of files) {
-      const source = await readFile(file, "utf8");
-      if (containsSql(source)) {
-        offenders.push(file.replace(SRC, "src/"));
-      }
-    }
+    const offenders = await sqlOffendersIn("search");
 
     expect(offenders).toEqual([]);
   });

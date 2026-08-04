@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeTag, normalizeTags } from "./tags.js";
+import { normalizeTag, normalizeTags } from "../src/tags.js";
 
 describe("normalizeTag", () => {
   it("lowercases and trims", () => {

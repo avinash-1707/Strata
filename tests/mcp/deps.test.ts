@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { LogContext, Logger } from "../logger.js";
-import { createBackgroundRunner } from "./deps.js";
+import type { LogContext, Logger } from "../../src/logger.js";
+import { createBackgroundRunner } from "../../src/mcp/deps.js";
 
 function recordingLogger(): { log: Logger; warns: { context: LogContext; message: string }[] } {
   const warns: { context: LogContext; message: string }[] = [];

@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { composeRecallKey } from "../cache/key.js";
-import type { RecallKey } from "../cache/types.js";
-import type { RecallOutput } from "../contracts.js";
-import { isStrataError, StrataError } from "../errors.js";
+import { composeRecallKey } from "../../src/cache/key.js";
+import type { RecallKey } from "../../src/cache/types.js";
+import type { RecallOutput } from "../../src/contracts.js";
+import { isStrataError, StrataError } from "../../src/errors.js";
 import { createFakeCache } from "./fakeCache.js";
 
 const key: RecallKey = { query: "how does auth work", k: 8, synthesize: true };

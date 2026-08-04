@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { isStrataError } from "../errors.js";
-import { assertEmbeddingDimensions, EMBEDDING_DIMENSIONS } from "./embedding.js";
+import { isStrataError } from "../../src/errors.js";
+import { assertEmbeddingDimensions, EMBEDDING_DIMENSIONS } from "../../src/ollama/embedding.js";
 
 function vector(length: number, fill = 0.1): number[] {
   return Array.from({ length }, () => fill);

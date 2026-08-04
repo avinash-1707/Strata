@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { isStrataError, StrataError } from "../errors.js";
-import { EMBEDDING_DIMENSIONS } from "../ollama/embedding.js";
+import { isStrataError, StrataError } from "../../src/errors.js";
+import { EMBEDDING_DIMENSIONS } from "../../src/ollama/embedding.js";
 import { createFakeStore } from "./fakeStore.js";
 
 function vector(seed: number): number[] {

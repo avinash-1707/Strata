@@ -10,9 +10,9 @@ export default tseslint.config(
     languageOptions: {
       parserOptions: {
         projectService: {
-          // Root-level config files aren't in tsconfig's `include` (which is
-          // src-only, to keep the build output clean) but still need linting.
-          allowDefaultProject: ["*.config.ts", "*.config.js"],
+          // `*.config.ts` is in tsconfig's `include`, so only the untyped JS config
+          // needs the escape hatch.
+          allowDefaultProject: ["*.config.js"],
         },
         tsconfigRootDir: import.meta.dirname,
       },
@@ -171,16 +171,15 @@ export default tseslint.config(
     /* Tools compose domain operations; SQL and the raw pool stay below them
        (DD-032). A tool holding SQL is the defect this rule exists to catch. */
     files: ["src/mcp/**/*.ts"],
-    ignores: ["src/mcp/**/*.test.ts"],
     rules: {
       "no-restricted-imports": [
         "error",
         {
           patterns: [
             {
-              group: ["**/db/**", "**/store/pg/**", "**/testing/**"],
+              group: ["**/db/**", "**/store/pg/**", "**/../tests/**"],
               message:
-                "Tools receive a MemoryStore through ToolDeps. They must not import the pg pool, the Postgres store implementation, or a fake.",
+                "A surface receives a MemoryStore through ToolDeps. It must not import the pg pool, the Postgres store implementation, or a test fake.",
             },
           ],
         },
@@ -189,12 +188,14 @@ export default tseslint.config(
   },
 
   {
-    /* Tests may assert on values the type system can't prove, and may use
-       non-null assertions on fixture data that is obviously present. */
-    files: ["src/**/*.test.ts", "src/testing/**/*.ts"],
+    /* Tests and fakes may assert on values the type system can't prove, may use
+       non-null assertions on fixture data that is obviously present, and are exempt
+       from the seam rules above — a test legitimately reaches across every layer. */
+    files: ["tests/**/*.ts"],
     rules: {
       "@typescript-eslint/no-non-null-assertion": "off",
       "@typescript-eslint/no-unsafe-assignment": "off",
+      "no-restricted-imports": "off",
     },
   },
 

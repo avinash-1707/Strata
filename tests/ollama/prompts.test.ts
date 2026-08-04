@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildCompressionPrompt, buildSynthesisPrompt } from "./prompts.js";
+import { buildCompressionPrompt, buildSynthesisPrompt } from "../../src/ollama/prompts.js";
 
 describe("buildCompressionPrompt", () => {
   it("names both required output fields and forbids prose", () => {

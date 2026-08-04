@@ -1,12 +1,12 @@
-import { StrataError } from "../errors.js";
-import { assertEmbeddingDimensions, EMBEDDING_DIMENSIONS } from "../ollama/embedding.js";
+import { StrataError } from "../../src/errors.js";
+import { assertEmbeddingDimensions, EMBEDDING_DIMENSIONS } from "../../src/ollama/embedding.js";
 import type {
   Embedding,
   EmbeddingKind,
   GenerateOptions,
   ModelCallOptions,
   Ollama,
-} from "../ollama/types.js";
+} from "../../src/ollama/types.js";
 
 /**
  * An in-memory `Ollama` whose failure modes are selected rather than simulated.

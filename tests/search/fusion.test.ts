@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { fuseRankings, RRF_K, type RankedList } from "./fusion.js";
+import { fuseRankings, RRF_K, type RankedList } from "../../src/search/fusion.js";
 
 const lexical = (ids: readonly string[]): RankedList => ({ name: "lexical", ids });
 const semantic = (ids: readonly string[]): RankedList => ({ name: "semantic", ids });

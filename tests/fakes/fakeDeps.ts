@@ -1,8 +1,8 @@
-import type { Config } from "../config.js";
-import { describeUnknown } from "../errors.js";
-import type { Logger } from "../logger.js";
-import { createSilentLogger } from "../logger.js";
-import type { BackgroundRunner, ToolDeps } from "../mcp/deps.js";
+import type { Config } from "../../src/config.js";
+import { describeUnknown } from "../../src/errors.js";
+import type { Logger } from "../../src/logger.js";
+import { createSilentLogger } from "../../src/logger.js";
+import type { BackgroundRunner, ToolDeps } from "../../src/mcp/deps.js";
 import type { FakeCache, FakeCacheOptions } from "./fakeCache.js";
 import { createFakeCache } from "./fakeCache.js";
 import type { FakeOllama, FakeOllamaOptions } from "./fakeOllama.js";

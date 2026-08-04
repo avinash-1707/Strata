@@ -6,7 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { afterAll, describe, expect, it } from "vitest";
 
-const HARNESS = fileURLToPath(new URL("../testing/stdioHarness.ts", import.meta.url));
+const HARNESS = fileURLToPath(new URL("../support/stdioHarness.ts", import.meta.url));
 const TSX = fileURLToPath(new URL("../../node_modules/.bin/tsx", import.meta.url));
 
 /** Generous: a cold tsx start compiles the whole graph before the first frame. */

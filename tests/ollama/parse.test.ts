@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { isStrataError } from "../errors.js";
+import { isStrataError } from "../../src/errors.js";
 import {
   compressionJsonSchema,
   extractJsonObjects,
   parseCompressionResult,
-} from "./parse.js";
+} from "../../src/ollama/parse.js";
 
 const wellFormed = '{"summary":"Pool raised to 50.","suggested_tags":["postgres"]}';
 

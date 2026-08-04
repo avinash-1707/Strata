@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { RecallKey } from "./types.js";
-import { composeRecallKey, normalizeQuery } from "./key.js";
+import type { RecallKey } from "../../src/cache/types.js";
+import { composeRecallKey, normalizeQuery } from "../../src/cache/key.js";
 
 const base: RecallKey = { query: "how does auth work", k: 8, synthesize: true };
 

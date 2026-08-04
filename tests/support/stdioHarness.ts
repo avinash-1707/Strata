@@ -9,11 +9,11 @@
  *
  * Run with: pnpm dev:fake
  */
-import { isLogLevel } from "../logger.js";
-import { createLogger } from "../logger.js";
-import { createBackgroundRunner } from "../mcp/deps.js";
-import { serveStdio } from "../mcp/stdio.js";
-import { createFakeDeps } from "./fakeDeps.js";
+import { isLogLevel } from "../../src/logger.js";
+import { createLogger } from "../../src/logger.js";
+import { createBackgroundRunner } from "../../src/mcp/deps.js";
+import { serveStdio } from "../../src/mcp/stdio.js";
+import { createFakeDeps } from "../fakes/fakeDeps.js";
 
 const level = process.env["STRATA_LOG_LEVEL"];
 const log = createLogger(isLogLevel(level) ? level : "info");

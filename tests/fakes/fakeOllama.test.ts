@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { ENHANCEMENT_TIMEOUT_MS } from "../config.js";
-import { isStrataError } from "../errors.js";
-import { assertEmbeddingDimensions, EMBEDDING_DIMENSIONS } from "../ollama/embedding.js";
-import { compressionJsonSchema, parseCompressionResult } from "../ollama/parse.js";
+import { ENHANCEMENT_TIMEOUT_MS } from "../../src/config.js";
+import { isStrataError } from "../../src/errors.js";
+import { assertEmbeddingDimensions, EMBEDDING_DIMENSIONS } from "../../src/ollama/embedding.js";
+import { compressionJsonSchema, parseCompressionResult } from "../../src/ollama/parse.js";
 import { createFakeOllama } from "./fakeOllama.js";
 
 function codeOf(fn: () => unknown): string {

@@ -6,7 +6,7 @@ import {
   StrataError,
   publicMessageOf,
   wrapError,
-} from "./errors.js";
+} from "../src/errors.js";
 
 describe("StrataError", () => {
   it("carries the code and preserves the cause", () => {

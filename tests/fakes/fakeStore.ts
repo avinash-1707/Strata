@@ -1,4 +1,4 @@
-import { StrataError } from "../errors.js";
+import { StrataError } from "../../src/errors.js";
 import type {
   Enhancement,
   MemoryRecord,
@@ -6,7 +6,7 @@ import type {
   NewMemory,
   RankedMemory,
   SearchOptions,
-} from "../store/types.js";
+} from "../../src/store/types.js";
 
 /**
  * An in-memory `MemoryStore`, for testing tool logic and its degradation paths — not

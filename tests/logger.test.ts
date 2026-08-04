@@ -3,9 +3,9 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { createSilentLogger, isLogLevel, LOG_LEVELS } from "./logger.js";
+import { createSilentLogger, isLogLevel, LOG_LEVELS } from "../src/logger.js";
 
-const PROBE = fileURLToPath(new URL("./testing/loggerProbe.ts", import.meta.url));
+const PROBE = fileURLToPath(new URL("./support/loggerProbe.ts", import.meta.url));
 
 function runProbe(): { stdout: string; stderr: string; status: number | null } {
   const result = spawnSync(process.execPath, ["--import", "tsx", PROBE], {
