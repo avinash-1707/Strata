@@ -61,9 +61,19 @@ These hold for every code change. Details in `docs/coding-standards.md`.
 12. Never install model weights on this Mac. Models live only on the Ubuntu
     target (DD-027).
 
+## While you work
+
+- **Comment sparsely.** Only *why*, a `DD-0NN` reference, a warning, or an
+  unverified assumption. Never narrate what the code does. See
+  `docs/coding-standards.md` §13.
+- **Commit each coherent unit of work** once its checks pass — module + tests
+  green, or a phase sub-goal done. Don't accumulate a large uncommitted tree, and
+  never commit failing checks. See §14.
+
 ## Before you finish
 
-- `tsc --noEmit` and lint must be clean. Pure logic needs unit tests.
+- Run `pnpm check` (typecheck + lint + tests). It must be clean. **pnpm only —
+  never `npm`** (DD-031). Pure logic needs unit tests.
 - Architectural, schema, contract, or dependency change → update the
   **Current state** block in `docs/progress-tracker.md` and add a Log entry.
 - Made a non-obvious choice, or resolved an `Open` question → add an entry to
