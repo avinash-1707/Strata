@@ -56,6 +56,10 @@ These hold for every code change. Details in `docs/coding-standards.md`.
 9. Named constants with a justifying comment instead of magic numbers.
 10. Don't build for non-goals: no multi-user, no scale-out, no cloud. See
     `docs/project-overview.md`.
+11. Containers you start, you tear down in the same task (`--rm`, or
+    `docker compose down -v` in a trap). Never delete images (DD-030).
+12. Never install model weights on this Mac. Models live only on the Ubuntu
+    target (DD-027).
 
 ## Before you finish
 
