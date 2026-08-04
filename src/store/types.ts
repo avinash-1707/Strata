@@ -1,4 +1,4 @@
-import type { MemoryStatus } from "../contracts.js";
+import type { MemoryStatus } from "../contracts/common.js";
 
 /**
  * The persistence seam: domain methods, not SQL (DD-032). Imports only leaf types,

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { composeRecallKey } from "../../src/cache/key.js";
 import type { RecallKey } from "../../src/cache/types.js";
-import type { RecallOutput } from "../../src/contracts.js";
+import type { RecallOutput } from "../../src/contracts/recall.js";
 import { isStrataError, StrataError } from "../../src/errors.js";
 import { createFakeCache } from "./fakeCache.js";
 

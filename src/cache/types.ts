@@ -1,4 +1,4 @@
-import type { RecallOutput } from "../contracts.js";
+import type { RecallOutput } from "../contracts/recall.js";
 
 /**
  * The cache seam. Redis holds nothing durable: flushing it must cost latency
