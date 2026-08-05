@@ -38,3 +38,11 @@ export const REPAIR_BATCH_SIZE = 10;
  * backlog forever — the starvation DD-032 item 3 names.
  */
 export const MAX_ENHANCEMENT_ATTEMPTS = 5;
+
+/**
+ * Recall cache entry lifetime (DD-010). Correctness never depends on this —
+ * version-scoped keys make stale entries unreachable — so it only bounds how long
+ * an unreachable generation occupies Redis memory, while staying long enough for
+ * the repeat reads that make the cache worth having on a CPU-bound box (DD-028).
+ */
+export const RECALL_CACHE_TTL_SECONDS = 300;
