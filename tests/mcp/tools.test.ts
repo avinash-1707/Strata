@@ -3,7 +3,8 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { wrapError } from "../../src/errors.js";
+import type { StrataErrorCode } from "../../src/errors.js";
+import { StrataError, wrapError } from "../../src/errors.js";
 import { createStrataServer } from "../../src/mcp/server.js";
 import type { FakeDeps, FakeDepsOptions } from "../fakes/fakeDeps.js";
 import { createFakeDeps } from "../fakes/fakeDeps.js";
@@ -211,6 +212,40 @@ describe("a tool failure reaches the agent as an actionable result", () => {
       await harness.close();
     }
   });
+
+  /* The REST side pins each code to a status via an exhaustive Record. MCP has no
+     such table — runTool maps every failure to isError — so the thing worth pinning
+     here is that no code escapes as a protocol fault the agent cannot act on, and
+     that the code itself travels so it can tell "retry later" from "fix your input". */
+  it.each([
+    "CONFIG_INVALID",
+    "DB_QUERY_FAILED",
+    "CACHE_UNAVAILABLE",
+    "OLLAMA_UNAVAILABLE",
+    "OLLAMA_BAD_RESPONSE",
+    "EMBEDDING_DIM_MISMATCH",
+    "NOT_FOUND",
+    "UNAUTHORIZED",
+    "INVALID_INPUT",
+  ] as const satisfies readonly StrataErrorCode[])(
+    "%s reaches the agent as an error result carrying its code",
+    async (code) => {
+      const harness = await connect();
+      harness.deps.store.setFailure("searchByTag", new StrataError(code, "injected"));
+
+      try {
+        const result = await harness.client.callTool({
+          name: "search_by_tag",
+          arguments: { tags: ["postgres"] },
+        });
+
+        expect(result.isError).toBe(true);
+        expect(textOf(result as CallToolResult)).toContain(code);
+      } finally {
+        await harness.close();
+      }
+    },
+  );
 
   it("rejects input the contract forbids before the handler runs", async () => {
     const harness = await connect();
