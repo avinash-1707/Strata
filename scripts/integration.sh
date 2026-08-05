@@ -15,6 +15,8 @@ trap cleanup EXIT
 
 docker compose up -d --wait
 
+# Serialized: the container-backed files share one database, and parallel
+# workers truncating it under each other would fail tests for the wrong reason.
 STRATA_TEST_PG_URL="postgres://strata:strata@127.0.0.1:${PG_PORT}/strata" \
 STRATA_TEST_REDIS_URL="redis://127.0.0.1:${REDIS_PORT}" \
-pnpm exec vitest run "$@"
+pnpm exec vitest run --no-file-parallelism "$@"
