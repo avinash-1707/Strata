@@ -7,6 +7,7 @@ import { StrataError } from "../../src/errors.js";
 import type { FakeDeps, FakeDepsOptions } from "../fakes/fakeDeps.js";
 import { createFakeDeps } from "../fakes/fakeDeps.js";
 import { createStrataServer, SERVER_NAME, SERVER_VERSION } from "../../src/mcp/server.js";
+import { PROBE_TOOL_NAME, registerProbeTool } from "../support/probeTool.js";
 
 interface Harness {
   readonly client: Client;
@@ -16,7 +17,7 @@ interface Harness {
 
 async function connect(options: FakeDepsOptions = {}): Promise<Harness> {
   const deps = createFakeDeps(options);
-  const server = createStrataServer(deps);
+  const server = createStrataServer(deps, [registerProbeTool]);
   const client = new Client({ name: "test-client", version: "0.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
@@ -59,18 +60,35 @@ describe("a real MCP client against the server", () => {
 
   it("lists the registered tool with a description and an input schema", async () => {
     const { tools } = await harness.client.listTools();
-    const health = tools.find((tool) => tool.name === "strata_health");
+    const probe = tools.find((tool) => tool.name === PROBE_TOOL_NAME);
 
-    expect(health).toBeDefined();
-    // The description is the product surface for an agent-facing server: it
-    // decides whether the tool is ever called.
-    expect(health?.description ?? "").not.toBe("");
-    expect(health?.inputSchema).toMatchObject({ type: "object" });
+    expect(probe).toBeDefined();
+    expect(probe?.description ?? "").not.toBe("");
+    expect(probe?.inputSchema).toMatchObject({ type: "object" });
+  });
+
+  /* The four product tools, and only those, reach an agent. `restore` is REST-only
+     (DD-039), and the retired strata_health must not come back. */
+  it("registers exactly the four product tools, unprefixed", async () => {
+    const { tools } = await harness.client.listTools();
+    const shipped = tools.map((tool) => tool.name).filter((name) => name !== PROBE_TOOL_NAME);
+
+    expect(shipped.sort()).toEqual(["forget", "recall", "remember", "search_by_tag"]);
+  });
+
+  it("gives every shipped tool a non-empty description", async () => {
+    const { tools } = await harness.client.listTools();
+
+    // The description is the product surface for an agent-facing server: it decides
+    // whether the tool is ever called (DD-018).
+    for (const tool of tools) {
+      expect(tool.description ?? "", `${tool.name} has no description`).not.toBe("");
+    }
   });
 
   it("derives the wire JSON Schema from the Zod schema", async () => {
     const { tools } = await harness.client.listTools();
-    const schema = tools.find((tool) => tool.name === "strata_health")?.inputSchema;
+    const schema = tools.find((tool) => tool.name === PROBE_TOOL_NAME)?.inputSchema;
 
     expect(schema?.properties).toMatchObject({ echo: { type: "string" } });
     // `echo` is optional, so requiring it would be a contract break.
@@ -78,7 +96,7 @@ describe("a real MCP client against the server", () => {
   });
 
   it("calls the tool and returns both text and structured content", async () => {
-    const result = await harness.client.callTool({ name: "strata_health", arguments: {} });
+    const result = await harness.client.callTool({ name: PROBE_TOOL_NAME, arguments: {} });
 
     expect(result.isError).toBeFalsy();
     expect(textOf(result as CallToolResult)).toContain("Strata is up");
@@ -91,7 +109,7 @@ describe("a real MCP client against the server", () => {
 
   it("echoes an optional argument back", async () => {
     const result = await harness.client.callTool({
-      name: "strata_health",
+      name: PROBE_TOOL_NAME,
       arguments: { echo: "correlation-42" },
     });
 
@@ -99,7 +117,7 @@ describe("a real MCP client against the server", () => {
   });
 
   it("omits echo entirely when it was not supplied", async () => {
-    const result = await harness.client.callTool({ name: "strata_health", arguments: {} });
+    const result = await harness.client.callTool({ name: PROBE_TOOL_NAME, arguments: {} });
     expect(result.structuredContent).not.toHaveProperty("echo");
   });
 });
@@ -121,7 +139,7 @@ describe("schema validation happens before the handler runs", () => {
      rejected promise here would silently pass for the wrong reason. */
   it("rejects a wrong-typed argument without touching the handler", async () => {
     const result = await harness.client.callTool({
-      name: "strata_health",
+      name: PROBE_TOOL_NAME,
       arguments: { echo: 42 },
     });
 
@@ -135,7 +153,7 @@ describe("schema validation happens before the handler runs", () => {
 
   it("rejects an argument that violates a schema constraint", async () => {
     const result = await harness.client.callTool({
-      name: "strata_health",
+      name: PROBE_TOOL_NAME,
       arguments: { echo: "x".repeat(201) },
     });
 
@@ -144,7 +162,7 @@ describe("schema validation happens before the handler runs", () => {
 
   it("accepts an argument at the constraint boundary", async () => {
     const result = await harness.client.callTool({
-      name: "strata_health",
+      name: PROBE_TOOL_NAME,
       arguments: { echo: "x".repeat(200) },
     });
 
@@ -163,8 +181,8 @@ describe("dependency injection and degradation", () => {
     const second = await connect({ cache: { initialVersion: 22 } });
 
     try {
-      const a = await first.client.callTool({ name: "strata_health", arguments: {} });
-      const b = await second.client.callTool({ name: "strata_health", arguments: {} });
+      const a = await first.client.callTool({ name: PROBE_TOOL_NAME, arguments: {} });
+      const b = await second.client.callTool({ name: PROBE_TOOL_NAME, arguments: {} });
 
       expect(a.structuredContent).toMatchObject({ corpus_version: 11 });
       expect(b.structuredContent).toMatchObject({ corpus_version: 22 });
@@ -180,7 +198,7 @@ describe("dependency injection and degradation", () => {
     const harness = await connect({ cache: { down: true } });
 
     try {
-      const result = await harness.client.callTool({ name: "strata_health", arguments: {} });
+      const result = await harness.client.callTool({ name: PROBE_TOOL_NAME, arguments: {} });
 
       expect(result.isError).toBeFalsy();
       // A field that can only ever be `true` carries no information, so there is no
@@ -199,7 +217,7 @@ describe("dependency injection and degradation", () => {
     const harness = await connect({ config: { COMPACTION_ENABLED: true } });
 
     try {
-      const result = await harness.client.callTool({ name: "strata_health", arguments: {} });
+      const result = await harness.client.callTool({ name: PROBE_TOOL_NAME, arguments: {} });
       expect(result.structuredContent).toMatchObject({ compaction_enabled: true });
     } finally {
       await harness.close();
@@ -218,7 +236,7 @@ describe("a cache failure degrades rather than failing the call", () => {
     );
 
     try {
-      const result = await harness.client.callTool({ name: "strata_health", arguments: {} });
+      const result = await harness.client.callTool({ name: PROBE_TOOL_NAME, arguments: {} });
       // getCorpusVersion is the one call health guards, so this still succeeds —
       // degraded, which is the documented behavior for a cache failure.
       expect(result.isError).toBeFalsy();

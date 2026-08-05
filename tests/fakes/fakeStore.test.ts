@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { memoryIdSchema } from "../../src/contracts/common.js";
 import { isStrataError, StrataError } from "../../src/errors.js";
 import { EMBEDDING_DIMENSIONS } from "../../src/ollama/embedding.js";
 import { createFakeStore } from "./fakeStore.js";
@@ -428,6 +429,51 @@ describe("fake store: usage tracking (DD-011)", () => {
     const store = createFakeStore();
     await expect(store.touchUsage(["ghost"])).resolves.toBeUndefined();
     expect(store.touched).toEqual(["ghost"]);
+  });
+});
+
+describe("fake store: ids are contract-valid", () => {
+  /* memoryIdSchema is z.uuid() and the MCP SDK validates tool *output* against it, so
+     a readable id like `seed-1` fails output validation the moment a row crosses a
+     surface. Postgres generates these with gen_random_uuid(); the fake must match. */
+  it("gives an inserted row a UUID, as gen_random_uuid() would", async () => {
+    const store = createFakeStore();
+
+    const row = await store.insertRaw({
+      summary: "s",
+      rawContent: "c",
+      contentHash: "h",
+      tags: [],
+      sessionId: null,
+    });
+
+    expect(memoryIdSchema.safeParse(row.id).success).toBe(true);
+  });
+
+  it("gives every inserted row a distinct id", async () => {
+    const store = createFakeStore();
+    const made = await Promise.all(
+      ["one", "two", "three"].map((hash) =>
+        store.insertRaw({
+          summary: hash,
+          rawContent: hash,
+          contentHash: hash,
+          tags: [],
+          sessionId: null,
+        }),
+      ),
+    );
+
+    expect(new Set(made.map((row) => row.id)).size).toBe(3);
+  });
+
+  it("defaults a seeded row to a UUID too", () => {
+    const store = createFakeStore({ rows: [{ summary: "a" }, { summary: "b" }] });
+
+    for (const row of store.rows) {
+      expect(memoryIdSchema.safeParse(row.id).success).toBe(true);
+    }
+    expect(new Set(store.rows.map((row) => row.id)).size).toBe(2);
   });
 });
 

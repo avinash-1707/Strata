@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { StrataError } from "../../src/errors.js";
 import type {
   Enhancement,
@@ -74,6 +76,18 @@ export interface FakeStoreOptions {
 /** Fixed epoch so seeded `createdAt` values are deterministic and ordered. */
 const SEED_EPOCH_MS = Date.UTC(2026, 0, 1);
 
+/**
+ * A deterministic but *contract-valid* default id. `memoryIdSchema` is `z.uuid()`
+ * and the MCP SDK validates tool output against it, so a readable id like `seed-1`
+ * fails output validation the moment the row crosses a surface. An explicit `id` is
+ * still honored as given — convenient for readable assertions in tool-level tests,
+ * but it must be a real UUID for any row that reaches MCP or REST.
+ */
+function seedUuid(index: number): string {
+  const suffix = String(index + 1).padStart(12, "0");
+  return `00000000-0000-4000-8000-${suffix}`;
+}
+
 export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
   // The embedding is held beside the record rather than on it: MemoryRecord
   // deliberately omits the vector, because no read path should ship 768 floats to
@@ -87,11 +101,11 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
   const lexicalOrder = options.lexicalRanking;
   const semanticOrder = options.semanticRanking;
   let down = options.down ?? false;
-  let nextId = 1;
+
 
   function seed(seeds: readonly SeedMemory[]): MemoryRecord[] {
     return seeds.map((seed, index) => {
-      const id = seed.id ?? `seed-${String(index + 1)}`;
+      const id = seed.id ?? seedUuid(index);
       const record: MemoryRecord = {
         id,
         summary: seed.summary,
@@ -251,7 +265,7 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
         return existing;
       }
       const record: MemoryRecord = {
-        id: `mem-${String(nextId++)}`,
+        id: randomUUID(),
         summary: memory.summary,
         rawContent: memory.rawContent,
         contentHash: memory.contentHash,

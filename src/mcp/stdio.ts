@@ -3,9 +3,13 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { describeUnknown } from "../errors.js";
 import type { Logger } from "../logger.js";
 import type { ToolDeps } from "../deps.js";
+import type { ToolRegistrar } from "./server.js";
 import { createStrataServer, SERVER_NAME, SERVER_VERSION } from "./server.js";
 
 export interface ServeStdioOptions {
+  /** Test-only tools. Nothing in `src` passes this. */
+  readonly extraTools?: readonly ToolRegistrar[];
+
   /**
    * Released after the client goes away and before this resolves. `ToolDeps` holds
    * no `Db` and nothing else calls `Cache.close()`, so without this seam a pg Pool
@@ -23,7 +27,7 @@ export interface ServeStdioOptions {
  * deployment is cross-host and its transport is Phase 12's decision.
  */
 export async function serveStdio(deps: ToolDeps, options: ServeStdioOptions = {}): Promise<void> {
-  const server = createStrataServer(deps);
+  const server = createStrataServer(deps, options.extraTools ?? []);
   const transport = new StdioServerTransport();
 
   const closed = new Promise<void>((resolve) => {

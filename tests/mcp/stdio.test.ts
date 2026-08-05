@@ -6,6 +6,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { afterAll, describe, expect, it } from "vitest";
 
+import { PROBE_TOOL_NAME } from "../support/probeTool.js";
+
 const HARNESS = fileURLToPath(new URL("../support/stdioHarness.ts", import.meta.url));
 const TSX = fileURLToPath(new URL("../../node_modules/.bin/tsx", import.meta.url));
 
@@ -161,7 +163,7 @@ describe("stdio transport: raw stream inspection (DD-026)", { timeout: STARTUP_T
       jsonrpc: "2.0",
       id: 3,
       method: "tools/call",
-      params: { name: "strata_health", arguments: { echo: "raw" } },
+      params: { name: PROBE_TOOL_NAME, arguments: { echo: "raw" } },
     });
 
     const responses = await session.waitForResponses(3);
@@ -171,7 +173,7 @@ describe("stdio transport: raw stream inspection (DD-026)", { timeout: STARTUP_T
     expect(responses.filter((frame) => frame.error !== undefined)).toEqual([]);
 
     const listed = responses[1]?.result as { tools?: { name: string }[] } | undefined;
-    expect(listed?.tools?.map((tool) => tool.name)).toContain("strata_health");
+    expect(listed?.tools?.map((tool) => tool.name)).toContain(PROBE_TOOL_NAME);
 
     const called = responses[2]?.result as { isError?: boolean } | undefined;
     expect(called?.isError).toBeFalsy();
@@ -265,10 +267,10 @@ describe("stdio transport: a real MCP client over a real pipe", { timeout: START
     await client.connect(transport);
 
     const { tools } = await client.listTools();
-    expect(tools.map((tool) => tool.name)).toContain("strata_health");
+    expect(tools.map((tool) => tool.name)).toContain(PROBE_TOOL_NAME);
 
     const result = await client.callTool({
-      name: "strata_health",
+      name: PROBE_TOOL_NAME,
       arguments: { echo: "over-stdio" },
     });
 
@@ -278,7 +280,7 @@ describe("stdio transport: a real MCP client over a real pipe", { timeout: START
 
   it("validates arguments in the spawned process too", async () => {
     const result = await client.callTool({
-      name: "strata_health",
+      name: PROBE_TOOL_NAME,
       arguments: { echo: 42 },
     });
 

@@ -14,6 +14,7 @@ import { createLogger } from "../../src/logger.js";
 import { createBackgroundRunner } from "../../src/deps.js";
 import { serveStdio } from "../../src/mcp/stdio.js";
 import { createFakeDeps } from "../fakes/fakeDeps.js";
+import { registerProbeTool } from "./probeTool.js";
 
 const level = process.env["STRATA_LOG_LEVEL"];
 const log = createLogger(isLogLevel(level) ? level : "info");
@@ -26,6 +27,7 @@ const deps = {
 };
 
 await serveStdio(deps, {
+  extraTools: [registerProbeTool],
   onShutdown: async () => {
     // Phase 4's main.ts closes a pg Pool and a Redis socket here. With fakes there is
     // nothing to release, so the log line is the only observable — which is exactly
