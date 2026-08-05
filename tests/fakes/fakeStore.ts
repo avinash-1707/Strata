@@ -316,15 +316,18 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
       const terms = tokenize(query);
       // An empty tsquery matches nothing in Postgres; returning everything here
       // would let a whitespace-only query look like a working search.
+      //
+      // AND over terms, because `websearch_to_tsquery` ANDs plain words (DD-014).
+      // OR-matching here made the fake match strictly more than Postgres does, and
+      // recall tests were asserting that fake-only generosity.
       const matches =
         terms.length === 0
           ? []
           : scoped(options)
-              .map((row) => ({ row, hits: countHits(row, terms) }))
-              // Ties broken by id, not insertion order, so ranking is stable.
-              .sort((a, b) => b.hits - a.hits || a.row.id.localeCompare(b.row.id))
-              .filter((entry) => entry.hits > 0)
-              .map((entry) => entry.row);
+              .filter((row) => matchesAllTerms(row, terms))
+              // Ordered by id, not insertion: every match satisfied every term, and
+              // imitating ts_rank_cd would be precision the contract does not promise.
+              .sort((a, b) => a.id.localeCompare(b.id));
 
       return rank(matches, lexicalOrder, options.limit, false);
     },
@@ -439,9 +442,9 @@ function tokenize(query: string): string[] {
     .filter((term) => term.length > 0);
 }
 
-function countHits(row: MemoryRecord, terms: readonly string[]): number {
+function matchesAllTerms(row: MemoryRecord, terms: readonly string[]): boolean {
   const haystack = `${row.summary} ${row.rawContent ?? ""}`.toLowerCase();
-  return terms.filter((term) => haystack.includes(term)).length;
+  return terms.every((term) => haystack.includes(term));
 }
 
 function cosine(a: readonly number[], b: readonly number[] | undefined): number | undefined {

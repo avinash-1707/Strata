@@ -226,8 +226,9 @@ describe("fake store: writes", () => {
 });
 
 describe("fake store: lexical search", () => {
-  // Rank is array position, not a field — fusion derives it from the index.
-  it("orders by number of matching terms, best first", async () => {
+  // `websearch_to_tsquery` ANDs plain words (DD-014): a row missing any term is
+  // not a match at all, not a lower-ranked one.
+  it("requires every term, as websearch_to_tsquery does", async () => {
     const store = createFakeStore({
       rows: [
         { id: "both", summary: "redis cache invalidation" },
@@ -236,7 +237,7 @@ describe("fake store: lexical search", () => {
     });
 
     const hits = await store.searchLexical("redis cache", { limit: LIMIT });
-    expect(hits.map((hit) => hit.memory.id)).toEqual(["both", "one"]);
+    expect(hits.map((hit) => hit.memory.id)).toEqual(["both"]);
   });
 
   it("returns no similarity, because a lexical hit has no cosine (DD-033)", async () => {

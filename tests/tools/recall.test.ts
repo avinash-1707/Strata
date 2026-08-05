@@ -74,7 +74,8 @@ describe("recall: the happy path", () => {
       store: {
         rows: [
           { id: "a", summary: "postgres pool", embedding: vector(1) },
-          { id: "b", summary: "postgres timeout" },
+          // Contains both query terms: lexical matching is AND-over-tokens (DD-014).
+          { id: "b", summary: "postgres pool timeout" },
         ],
       },
     });
