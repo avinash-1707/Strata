@@ -14,6 +14,19 @@
 export const ENHANCEMENT_TIMEOUT_MS = 5_000;
 
 /**
+ * The DD-005 stage 1 placeholder `summary`, read only before compression lands.
+ * Raw content is indexed separately, so this is not a matching budget — just
+ * enough to recognize a memory whose enhancement failed.
+ */
+export const RAW_SUMMARY_LENGTH = 500;
+
+/**
+ * Candidates per ranker before fusion. Well above the default `k` of 8 so RRF has
+ * real disagreement to resolve, small enough to keep the synthesis prompt bounded.
+ */
+export const SEARCH_CANDIDATE_LIMIT = 20;
+
+/**
  * Rows per repair run (DD-041). Each costs a compression *and* an embedding on a
  * CPU-only Ollama (DD-028), competing with foreground `remember` calls.
  */
