@@ -26,7 +26,10 @@ const TASK_PREFIXES: Record<EmbeddingKind, string> = {
 };
 
 function isNomicFamily(model: string): boolean {
-  return model.toLowerCase().startsWith("nomic-embed");
+  // includes, not startsWith: registry-qualified names like
+  // "hf.co/nomic-ai/nomic-embed-text-v1.5-GGUF" are the same family, and missing
+  // the prefix there would silently halve retrieval quality (DD-008).
+  return model.toLowerCase().includes("nomic-embed");
 }
 
 // UNVERIFIED (DD-029): assumes the current /api/embed endpoint and its response
@@ -72,6 +75,11 @@ export function createOllamaClient(config: Config, fetchFn: typeof fetch = fetch
     try {
       return await response.json();
     } catch (cause) {
+      // The timeout can also fire mid-body: that is slowness, not unusable
+      // content, and Phase 8 will branch on the difference (retry vs poison).
+      if (cause instanceof DOMException && (cause.name === "TimeoutError" || cause.name === "AbortError")) {
+        throw wrapError("OLLAMA_UNAVAILABLE", "ollama timed out mid-response", cause, { path });
+      }
       throw wrapError("OLLAMA_BAD_RESPONSE", "ollama answered non-JSON", cause, { path });
     }
   }

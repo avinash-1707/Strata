@@ -59,6 +59,18 @@ describe("ollama client: embed (DD-008)", () => {
     expect(sent[1]?.body["input"]).toBe("search_query: a question");
   });
 
+  it("prefixes a registry-qualified nomic name — same family, same biencoder", async () => {
+    const { fetchFn, sent } = fakeFetch(EMBED_OK);
+    const client = createOllamaClient(
+      config({ EMBEDDING_MODEL: "hf.co/nomic-ai/nomic-embed-text-v1.5-GGUF" }),
+      fetchFn,
+    );
+
+    await client.embed("stored text", "document");
+
+    expect(sent[0]?.body["input"]).toBe("search_document: stored text");
+  });
+
   it("leaves a non-nomic model unprefixed — prefixing it would corrupt embeddings", async () => {
     const { fetchFn, sent } = fakeFetch(EMBED_OK);
     const client = createOllamaClient(config({ EMBEDDING_MODEL: "mxbai-embed-large" }), fetchFn);

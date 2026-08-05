@@ -16,6 +16,17 @@ const CONNECT_TIMEOUT_MS = 5_000;
  */
 const STATEMENT_TIMEOUT_MS = 30_000;
 
+/** The SQLSTATE, if the caught value carries one. It names a *class* of failure
+ *  (23505, 40001…) and holds no query text, so it is safe in details — unlike the
+ *  driver message, which embeds statements and parameter values. */
+function sqlStateOf(cause: unknown): string | undefined {
+  if (typeof cause === "object" && cause !== null && "code" in cause) {
+    const code = (cause as { code?: unknown }).code;
+    return typeof code === "string" ? code : undefined;
+  }
+  return undefined;
+}
+
 async function run<R extends Row>(
   client: pg.Pool | pg.PoolClient,
   sql: string,
@@ -23,11 +34,22 @@ async function run<R extends Row>(
 ): Promise<readonly R[]> {
   try {
     const result = await client.query<R>(sql, params === undefined ? undefined : [...params]);
+    // A multi-statement string (simple protocol) resolves to an array of results
+    // with no single rows list; migration files are the one caller that does this.
+    if (Array.isArray(result)) {
+      return [];
+    }
     return result.rows;
   } catch (cause) {
     // wrapError keeps the driver text in `cause`/stderr only: it embeds statements
     // and parameter values, which must never reach a surface (DD-032 item 14).
-    throw wrapError("DB_QUERY_FAILED", "database query failed", cause);
+    const sqlState = sqlStateOf(cause);
+    throw wrapError(
+      "DB_QUERY_FAILED",
+      "database query failed",
+      cause,
+      sqlState === undefined ? undefined : { sqlState },
+    );
   }
 }
 
@@ -45,6 +67,10 @@ export function createDb(config: Config, log: Logger): Db {
   pool.on("error", (error) => {
     log.warn({ error: error.message }, "idle database connection errored");
   });
+
+  // Idempotent: shutdown paths (normal, boot failure) may both reach close(),
+  // and pool.end() throws on a second call.
+  let closed = false;
 
   return {
     query: (sql, params) => run(pool, sql, params),
@@ -83,6 +109,10 @@ export function createDb(config: Config, log: Logger): Db {
     },
 
     async close() {
+      if (closed) {
+        return;
+      }
+      closed = true;
       try {
         await pool.end();
       } catch (cause) {

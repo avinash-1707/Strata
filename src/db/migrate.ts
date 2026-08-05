@@ -65,32 +65,54 @@ export function planMigrations(
 }
 
 /**
- * Applies every pending migration, each in its own transaction together with its
- * `schema_migrations` row — so a half-applied file rolls back whole and the next
- * boot retries it. Returns the filenames applied, oldest first.
+ * Serializes concurrent boots. stdio MCP means one server process *per client*,
+ * so two instances migrating the same empty database in the same second is the
+ * normal case, not the exotic one — without the lock, the loser dies on a DDL
+ * conflict and that client's memory tools are dead until a manual restart.
+ * Arbitrary but stable; must never be reused for another Strata lock.
+ */
+const MIGRATION_LOCK_ID = 0x53_54_52_41; // "STRA"
+
+/**
+ * Applies every pending migration inside one advisory-locked transaction, each
+ * file together with its `schema_migrations` row — so a half-applied run rolls
+ * back whole and the next boot retries it, and a concurrent boot waits on the
+ * lock, then re-reads the history and no-ops. Returns the filenames applied,
+ * oldest first.
  */
 export async function migrate(db: Db, dir: URL = MIGRATIONS_DIR): Promise<readonly string[]> {
-  await db.query(
-    `create table if not exists schema_migrations (
-       version    text primary key,
-       applied_at timestamptz not null default now()
-     )`,
-  );
-
   const entries = await readdir(dir);
-  const applied = await db.query<{ version: string }>("select version from schema_migrations");
-  const pending = planMigrations(
-    entries,
-    applied.map((row) => row.version),
-  );
 
-  for (const name of pending) {
-    const sql = await readFile(new URL(name, dir), "utf8");
-    await db.withTransaction(async (tx) => {
+  return db.withTransaction(async (tx) => {
+    // xact-scoped: released on commit and rollback alike, so a failed migration
+    // cannot leave the lock held.
+    await tx.query("select pg_advisory_xact_lock($1)", [MIGRATION_LOCK_ID]);
+    // The client's 30s statement ceiling is sized for queries; an index build in
+    // a later migration is allowed to be slow, and failing it here would make
+    // the server unbootable on every retry.
+    await tx.query("set local statement_timeout = 0");
+
+    await tx.query(
+      `create table if not exists schema_migrations (
+         version    text primary key,
+         applied_at timestamptz not null default now()
+       )`,
+    );
+
+    const applied = await tx.query<{ version: string }>(
+      "select version from schema_migrations",
+    );
+    const pending = planMigrations(
+      entries,
+      applied.map((row) => row.version),
+    );
+
+    for (const name of pending) {
+      const sql = await readFile(new URL(name, dir), "utf8");
       await tx.query(sql);
       await tx.query("insert into schema_migrations (version) values ($1)", [name]);
-    });
-  }
+    }
 
-  return pending;
+    return pending;
+  });
 }

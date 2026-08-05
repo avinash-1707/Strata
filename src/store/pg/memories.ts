@@ -1,6 +1,9 @@
-import { StrataError } from "../../errors.js";
-import type { Queryable, Row } from "../../db/types.js";
+import { StrataError, isStrataError } from "../../errors.js";
+import type { Db, Queryable, Row } from "../../db/types.js";
 import type { Enhancement, MemoryRecord, NewMemory } from "../types.js";
+
+/** Postgres unique_violation — the memories_hash_live_idx raising on a race. */
+const UNIQUE_VIOLATION = "23505";
 
 /**
  * The only module that names the base `memories` table: reads go through
@@ -94,7 +97,11 @@ export async function findLiveByContentHash(
   return row === undefined ? undefined : toMemoryRecord(row);
 }
 
-export async function insertRaw(db: Queryable, memory: NewMemory): Promise<MemoryRecord> {
+// Takes `Db`, not `Queryable`, on purpose: the durable insert must be its own
+// autocommit statement (DD-005). A Queryable would let a future caller enroll it
+// in a transaction that also holds a model call, making the durable write
+// non-durable until the model answers — the exact bug DD-005 exists to prevent.
+export async function insertRaw(db: Db, memory: NewMemory): Promise<MemoryRecord> {
   const rows = await db.query<MemoryRow>(
     // The conflict target names the partial unique index's predicate: two racing
     // `remember`s can both pass findLiveByContentHash, and a plain insert would
@@ -178,22 +185,32 @@ export async function softDelete(db: Queryable, id: string): Promise<boolean> {
 }
 
 export async function restore(db: Queryable, id: string): Promise<boolean> {
-  const rows = await db.query<{ id: string }>(
-    // `not exists` mirrors memories_hash_live_idx: restoring under a live duplicate
-    // would raise 23505, so "not restorable" is the answer, not an error (DD-039).
-    // The correlated `memories.content_hash` is the row being updated.
-    `update memories set deleted_at = null
-     where id = $1
-       and deleted_at is not null
-       and superseded_by is null
-       and not exists (
-         select 1 from live_memories
-         where live_memories.content_hash = memories.content_hash
-       )
-     returning id`,
-    [id],
-  );
-  return rows.length > 0;
+  try {
+    const rows = await db.query<{ id: string }>(
+      // `not exists` mirrors memories_hash_live_idx: restoring under a live duplicate
+      // would raise 23505, so "not restorable" is the answer, not an error (DD-039).
+      // The correlated `memories.content_hash` is the row being updated.
+      `update memories set deleted_at = null
+       where id = $1
+         and deleted_at is not null
+         and superseded_by is null
+         and not exists (
+           select 1 from live_memories
+           where live_memories.content_hash = memories.content_hash
+         )
+       returning id`,
+      [id],
+    );
+    return rows.length > 0;
+  } catch (error) {
+    // The `not exists` check races a concurrent restore/remember of the same
+    // content: the loser hits the index anyway. That is still "not restorable",
+    // the answer DD-039 documents — not a 500.
+    if (isStrataError(error) && error.details?.["sqlState"] === UNIQUE_VIOLATION) {
+      return false;
+    }
+    throw error;
+  }
 }
 
 export async function findEnhancementBacklog(

@@ -339,6 +339,15 @@ export function describeMemoryStore(
       it("returns an empty array when no row carries the tag", async () => {
         await expect(store.searchByTag(["absent"], "any", LIMIT)).resolves.toEqual([]);
       });
+
+      /* `tags @> '{}'` matches every row in Postgres. Later phases call the store
+         without the tool schema in front, so the guard must live at the seam. */
+      it("returns nothing for an empty tag list", async () => {
+        await compressed({ tags: ["t"] });
+
+        await expect(store.searchByTag([], "all", LIMIT)).resolves.toEqual([]);
+        await expect(store.searchByTag([], "any", LIMIT)).resolves.toEqual([]);
+      });
     });
 
     describe("touchUsage (DD-011)", () => {

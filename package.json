@@ -11,7 +11,7 @@
     "pnpm": ">=11"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && cp -R src/db/migrations dist/db/migrations",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && cp -R src/db/migrations dist/db/migrations",
     "start": "node dist/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",

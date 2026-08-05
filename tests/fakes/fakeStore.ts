@@ -345,9 +345,11 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
 
     async searchByTag(tags, match, limit) {
       await enter("searchByTag");
-      // `match: "all"` with an empty tag list matches every row, exactly as
-      // `tags @> '{}'` does. Faithful, and therefore a real footgun: the tool's
-      // input schema is what must require at least one tag.
+      // Mirrors the real store's seam guard: `tags @> '{}'` would match every
+      // row, and later phases call the store without the tool schema in front.
+      if (tags.length === 0) {
+        return [];
+      }
       const wanted = new Set(tags);
       return live()
         .filter((row) =>

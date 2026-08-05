@@ -9,8 +9,12 @@ export async function searchByTag(
   match: "any" | "all",
   limit: number,
 ): Promise<readonly MemoryRecord[]> {
-  // `@>` with an empty array matches every row; the tool's input schema is what
-  // requires at least one tag, exactly as it does for the fake.
+  // `@>` with an empty array matches every row. The tool schema already requires
+  // one tag, but later phases call the store directly (compaction, DD-012) and
+  // will not pass through that schema — so the guard lives at the seam too.
+  if (tags.length === 0) {
+    return [];
+  }
   const operator = match === "all" ? "@>" : "&&";
   const rows = await db.query<MemoryRow>(
     `select ${MEMORY_COLUMNS}

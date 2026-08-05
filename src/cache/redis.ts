@@ -62,29 +62,37 @@ export function createRedisCache(config: Config, log: Logger): Cache {
   });
 
   // Boot must not depend on the cache being up (DD-005): the connect runs in the
-  // background and every operation awaits it *inside its own time budget* — so a
-  // call during the brief connecting window waits instead of failing spuriously,
-  // and a call while Redis is truly away still fails within OPERATION_TIMEOUT_MS.
-  const ready: Promise<void> = client.connect().then(
-    () => undefined,
-    (cause: unknown) => {
-      throw wrapError("CACHE_UNAVAILABLE", "redis connection failed", cause);
-    },
-  );
-  // Handled here so an unused cache cannot surface an unhandled rejection; the
-  // per-operation awaits still observe the failure through `ready` itself.
-  ready.catch((error: unknown) => {
-    log.warn({ error: describeUnknown(error) }, "redis connection failed");
+  // background. The reconnect strategy never gives up, so this promise may never
+  // settle — nothing below awaits it unconditionally.
+  void client.connect().catch((error: unknown) => {
+    log.warn({ error: describeUnknown(error) }, "redis connect failed");
+  });
+
+  // Settles on the *first* connection outcome, success or failure. Lets an op in
+  // the boot window wait briefly instead of failing spuriously, while an op after
+  // that fails in microseconds when Redis is away — without this, every call on a
+  // down Redis would burn the full OPERATION_TIMEOUT_MS, and a recall does three.
+  const firstAttempt = new Promise<void>((resolve) => {
+    client.once("ready", () => {
+      resolve();
+    });
+    client.once("error", () => {
+      resolve();
+    });
   });
 
   async function op<T>(operation: string, work: () => Promise<T>): Promise<T> {
-    return bounded(
-      (async () => {
-        await ready;
-        return work();
-      })(),
-      operation,
-    );
+    if (!client.isReady) {
+      await bounded(firstAttempt, operation);
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- isReady is a live getter that flips during the await; TS keeps the stale narrowing across it
+      if (!client.isReady) {
+        throw new StrataError(
+          "CACHE_UNAVAILABLE",
+          `cache ${operation} skipped: redis is not connected`,
+        );
+      }
+    }
+    return bounded(work(), operation);
   }
 
   return {
@@ -93,7 +101,13 @@ export function createRedisCache(config: Config, log: Logger): Cache {
         const raw = await op("version read", () => client.get(CORPUS_VERSION_KEY));
         // Missing key → 0, so the first bump (INCR → 1) still invalidates: a get
         // that defaulted to 1 would collide with that first post-mutation INCR (DD-044).
-        return raw === null ? 0 : Number.parseInt(raw, 10);
+        if (raw === null) {
+          return 0;
+        }
+        const version = Number.parseInt(raw, 10);
+        // A corrupted counter behaves like a missing one; NaN would compose
+        // "recall:vNaN:…" keys and then make the INCR invalidation path throw.
+        return Number.isInteger(version) && version >= 0 ? version : 0;
       } catch (cause) {
         throw wrapError("CACHE_UNAVAILABLE", "could not read the corpus version", cause);
       }
@@ -108,9 +122,10 @@ export function createRedisCache(config: Config, log: Logger): Cache {
     },
 
     async getRecall(corpusVersion, key: RecallKey) {
+      const composed = composeRecallKey(corpusVersion, key);
       let raw: string | null;
       try {
-        raw = await op("recall read", () => client.get(composeRecallKey(corpusVersion, key)));
+        raw = await op("recall read", () => client.get(composed));
       } catch (cause) {
         throw wrapError("CACHE_UNAVAILABLE", "could not read the recall cache", cause);
       }
@@ -127,6 +142,11 @@ export function createRedisCache(config: Config, log: Logger): Cache {
           { error: describeUnknown(cause) },
           "recall cache entry was unreadable; treating as a miss",
         );
+        // Best-effort eviction: left in place, the poison entry would re-fail
+        // every identical recall for the full TTL.
+        await client.del(composed).catch((error: unknown) => {
+          log.debug({ error: describeUnknown(error) }, "could not evict the unreadable entry");
+        });
         return undefined;
       }
     },
@@ -150,12 +170,13 @@ export function createRedisCache(config: Config, log: Logger): Cache {
         // destroy(), not close(): close() waits for a live connection's pending
         // replies, but shutdown must also work while Redis is down or reconnecting.
         client.destroy();
-        return Promise.resolve();
       } catch (cause) {
-        return Promise.reject(
-          wrapError("CACHE_UNAVAILABLE", "could not close the redis client", cause),
-        );
+        // Never rejects: teardown of an optimization must not block teardown of
+        // the durable resources behind it, and destroy() throws on a client that
+        // was already destroyed or never connected.
+        log.debug({ error: describeUnknown(cause) }, "redis client was already closed");
       }
+      return Promise.resolve();
     },
   };
 }
