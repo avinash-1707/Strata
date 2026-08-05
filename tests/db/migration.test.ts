@@ -69,6 +69,15 @@ describe("migration 001: the memories table", () => {
     expect(table).toContain("check (status in ('raw', 'compressed'))");
   });
 
+  /* `on delete set null` would be actively wrong: purging a merged row would clear
+     superseded_by on its inputs, making them live again and resurrecting the content
+     the merge replaced. */
+  it("restricts deletion of a row other rows were merged into", () => {
+    // Only the positive assertion: a `not.toContain("on delete set null")` matched the
+    // comment that explains why that action is wrong.
+    expect(table).toMatch(/superseded_by\s+uuid references memories\(id\) on delete restrict/);
+  });
+
   it("generates summary_tsv with the same text search config the query side uses (DD-014)", () => {
     expect(table).toContain("generated always as");
     expect(table).toContain("to_tsvector('english'");
@@ -88,6 +97,14 @@ describe("migration 001: indexes DD-013 requires up front", () => {
   ] as const)("creates %s", (name, shape) => {
     expect(SQL).toContain(name);
     expect(SQL).toMatch(shape);
+  });
+
+  /* Without its own index, the steady state — a large corpus with an almost-empty
+     backlog — makes every repair tick scan most of the live index to find nothing. */
+  it("indexes the repair backlog on its own predicate", () => {
+    expect(SQL).toMatch(
+      /create index memories_backlog_idx on memories \(created_at\)\s*\n\s*where \(status = 'raw' or needs_embedding\)/,
+    );
   });
 
   it("keeps the live-row index partial (DD-012)", () => {

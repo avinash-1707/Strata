@@ -3,6 +3,7 @@ import { SEARCH_CANDIDATE_LIMIT } from "../config/budgets.js";
 import type { RecallInput, RecallOutput, RecallResult } from "../contracts/recall.js";
 import type { ToolDeps } from "../deps.js";
 import { describeUnknown, wrapError } from "../errors.js";
+import { assertEmbeddingDimensions } from "../ollama/embedding.js";
 import { buildSynthesisPrompt } from "../ollama/prompts.js";
 import { fuseRankings } from "../search/fusion.js";
 import type { RankedMemory, SearchOptions } from "../store/types.js";
@@ -129,6 +130,10 @@ async function searchSemantic(
     const embedded = await deps.ollama.embed(query, "query", {
       timeoutMs: deps.config.OLLAMA_TIMEOUT_MS,
     });
+    // Checked before the vector reaches pgvector, which errors on a width mismatch
+    // rather than skipping rows. Without this a model swap surfaces as an opaque query
+    // failure instead of the named degradation to lexical-only.
+    assertEmbeddingDimensions(embedded.vector, embedded.model);
     vector = embedded.vector;
   } catch (error: unknown) {
     deps.log.warn(

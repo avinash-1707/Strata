@@ -192,6 +192,23 @@ describe("recall: one path failing still serves the other", () => {
     expect(found.results.length).toBeGreaterThan(0);
   });
 
+  /* pgvector errors on a width mismatch rather than skipping rows, so an unchecked
+     query vector turns a model swap into an opaque query failure. */
+  it.each(["wrongDimensions", "nonFinite"] as const)(
+    "degrades to lexical-only for an unusable query vector: %s",
+    async (mode) => {
+      const { deps, log } = withLog({ store: { rows: ROWS }, ollama: { embed: mode } });
+
+      const found = await recall(ask(), deps);
+
+      expect(found.results.map((result) => result.id)).toContain("a");
+      expect(found.results.every((result) => result.similarity === undefined)).toBe(true);
+      expect(log.messages("warn")).toContain(
+        "query embedding failed, degrading to lexical-only",
+      );
+    },
+  );
+
   it("degrades to lexical-only when the query cannot be embedded", async () => {
     const { deps, log } = withLog({ store: { rows: ROWS }, ollama: { embed: "unavailable" } });
 

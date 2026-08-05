@@ -3,6 +3,10 @@
 -- Every column DD-005, DD-009, DD-011, DD-012 and DD-020 need ships here. Adding
 -- any of them later forces a rewrite of tools already built against their absence.
 -- Forward-only: there is no down migration, and no schema.sql.
+--
+-- The migration runner owns `schema_migrations` and must create it *before* applying
+-- this file — bootstrapping it here would leave the runner unable to tell whether 001
+-- had already run.
 
 create extension if not exists vector;
 create extension if not exists pgcrypto;
@@ -26,7 +30,11 @@ create table memories (
   importance        smallint not null default 3,
   recall_count      integer not null default 0,       -- DD-011
   compaction_depth  smallint not null default 0,      -- DD-012
-  superseded_by     uuid references memories(id),     -- DD-012
+  -- `restrict`, stated rather than left to the default, because the alternative is
+  -- actively wrong: `on delete set null` would clear superseded_by on a merge's inputs
+  -- when the merged row is purged, making them live again and resurrecting content the
+  -- merge replaced. A purge must deal with the inputs first (DD-012, DD-039).
+  superseded_by     uuid references memories(id) on delete restrict,
   deleted_at        timestamptz,                      -- DD-012: soft delete
   created_at        timestamptz not null default now(),
   last_recalled_at  timestamptz,
@@ -52,6 +60,14 @@ create index memories_session_idx  on memories (session_id);
 create index memories_hash_idx     on memories (content_hash);
 create index memories_live_idx     on memories (created_at desc)
   where superseded_by is null and deleted_at is null;  -- DD-012: live-row reads
+
+-- The repair backlog's own index. memories_live_idx can supply the ordering by
+-- scanning backwards, but the planner then filters row by row — and the steady state
+-- is a large corpus with an almost-empty backlog, so every repair tick would scan most
+-- of the live index to find nothing.
+create index memories_backlog_idx on memories (created_at)
+  where (status = 'raw' or needs_embedding)
+    and superseded_by is null and deleted_at is null;
 
 -- DD-032 item 11. Without this, DD-020's idempotency would be a fake-only property:
 -- real Postgres would accept a double insert as two live rows. Partial, not total,
