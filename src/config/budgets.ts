@@ -40,6 +40,13 @@ export const REPAIR_BATCH_SIZE = 10;
 export const MAX_ENHANCEMENT_ATTEMPTS = 5;
 
 /**
+ * Cadence of DD-005 stage 3. Frequent enough that a degraded write waits about a
+ * minute for its retry, rare enough that repair's CPU-bound model calls do not
+ * compete with foreground `remember` traffic on a box with no GPU (DD-028).
+ */
+export const REPAIR_INTERVAL_MS = 60_000;
+
+/**
  * Recall cache entry lifetime (DD-010). Correctness never depends on this —
  * version-scoped keys make stale entries unreachable — so it only bounds how long
  * an unreachable generation occupies Redis memory, while staying long enough for

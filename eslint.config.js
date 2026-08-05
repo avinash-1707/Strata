@@ -91,7 +91,7 @@ export default tseslint.config(
      on a shared block plus per-directory additions, and the additions silently
      discarded the shared one — caught only by planting a violation in each
      directory. Do not refactor this into a base-plus-override. */
-  ...seam("src", ["db", "store/pg", "mcp", "http"]),
+  ...seam("src", ["db", "store/pg", "mcp", "http"], ["src/main.ts"]),
   ...seam("src/search", ["db", "cache", "ollama", "store", "mcp", "http"]),
   ...seam("src/db", ["cache", "ollama", "store", "search", "mcp", "http"]),
   ...seam("src/cache", ["db", "ollama", "store", "search", "mcp", "http"]),
@@ -106,6 +106,26 @@ export default tseslint.config(
   /* Surfaces call tools and receive a MemoryStore through ToolDeps. */
   ...seam("src/mcp", ["db", "store/pg", "http"]),
   ...seam("src/http", ["db", "store/pg", "mcp"]),
+
+  {
+    /* The composition root: the one production file allowed to name every layer,
+       because assembling them is its job (architecture § Module map). It still may
+       not import a test fake. */
+    files: ["src/main.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/tests/**"],
+              message: "src/main.ts may not import a test fake. See DD-032.",
+            },
+          ],
+        },
+      ],
+    },
+  },
 
   {
     /* Tests and fakes may assert on values the type system can't prove, may use

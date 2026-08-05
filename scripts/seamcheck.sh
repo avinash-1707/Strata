@@ -97,6 +97,13 @@ probe src/jobs/probe.ts   ../tools/enhance.js     "jobs -> tools"      ALLOWED
 probe src/jobs/probe.ts   ../deps.js              "jobs -> ToolDeps"   ALLOWED
 probe src/jobs/probe.ts   ../store/types.js       "jobs -> MemoryStore" ALLOWED
 
+echo "the composition root may name every layer, but never a fake"
+probe src/main.ts   ./db/client.js          "main -> db"         ALLOWED
+probe src/main.ts   ./store/pg/index.js     "main -> store/pg"   ALLOWED
+probe src/main.ts   ./mcp/stdio.js          "main -> mcp"        ALLOWED
+probe src/main.ts   ./http/app.js           "main -> http"       ALLOWED
+probe src/main.ts   ../tests/fakes/fakeDeps.js "main -> fake"    BLOCKED
+
 echo "production must not import test fakes"
 probe src/tools/probe.ts  ../../tests/fakes/fakeStore.js  "tools -> fake"  BLOCKED
 probe src/http/probe.ts   ../../tests/fakes/fakeDeps.js   "http -> fake"   BLOCKED
