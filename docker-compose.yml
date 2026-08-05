@@ -1,0 +1,38 @@
+# Dev stack only: Postgres + Redis for integration runs on the Mac (OrbStack).
+# Ollama is deliberately absent — models live on the Ubuntu target, never here
+# (DD-027). Production compose arrives with Phase 5 on that machine.
+#
+# Disposable by design (DD-030): no volumes, so `docker compose down -v` returns
+# the stack to a truly empty database. Bring it up for a verification run and
+# tear it down in the same task.
+#
+# Host ports are non-default so a locally installed Postgres/Redis cannot
+# collide with (or silently stand in for) the containers under test.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: strata
+      POSTGRES_PASSWORD: strata
+      POSTGRES_DB: strata
+    ports:
+      - "${STRATA_PG_PORT:-54329}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U strata -d strata"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    # No persistence: the corpus version counter and the entries it scopes must
+    # share a lifetime, or a restart could resurrect a stale cache generation
+    # (architecture § Cache layer).
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "${STRATA_REDIS_PORT:-63790}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
