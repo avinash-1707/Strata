@@ -387,6 +387,13 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
       if (current === undefined) {
         return false;
       }
+      // Mirrors memories_hash_live_idx. Reachable exactly because that index is
+      // partial: forget X, remember the same content, then try to restore X. Real
+      // Postgres raises 23505 here, so returning true would make recovery a 503 in
+      // Phase 4 while every test still passed.
+      if (live().some((row) => row.contentHash === current.contentHash)) {
+        return false;
+      }
       replace(id, { ...current, deletedAt: null });
       return true;
     },

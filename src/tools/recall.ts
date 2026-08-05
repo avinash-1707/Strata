@@ -38,7 +38,10 @@ export async function recall(input: RecallInput, deps: ToolDeps): Promise<Recall
 
   const cacheMs = elapsed(startedAt);
   const searchOptions: SearchOptions = {
-    limit: SEARCH_CANDIDATE_LIMIT,
+    // Never below `k`: MAX_RECALL_K is 50 while the candidate budget is 20, so a
+    // fixed 20 would cap a k=50 request at the size of the two lists' union and
+    // silently return fewer results than the caller asked for.
+    limit: Math.max(SEARCH_CANDIDATE_LIMIT, input.k),
     ...(input.session_id === undefined ? {} : { sessionId: input.session_id }),
   };
 
@@ -66,8 +69,14 @@ export async function recall(input: RecallInput, deps: ToolDeps): Promise<Recall
   const results = fuse(lexicalHits, semanticHits, input.k);
   const fuseMs = elapsed(fuseStartedAt);
 
+  // A result computed while a retrieval path was down is not the answer this query
+  // has; it is the answer the outage had. Tracked so it is never cached.
+  const retrievalDegraded = lexical.status === "rejected" || !semanticServed;
+
   const synthesisStartedAt = performance.now();
-  const answer = input.synthesize ? await synthesize(input.query, results, deps) : undefined;
+  const answer = input.synthesize
+    ? await synthesize(input.query, results, deps, retrievalDegraded)
+    : undefined;
   const synthesisMs = elapsed(synthesisStartedAt);
 
   const output: RecallOutput = {
@@ -76,7 +85,13 @@ export async function recall(input: RecallInput, deps: ToolDeps): Promise<Recall
   };
 
   recordUsage(deps, results);
-  if (version !== undefined) {
+
+  /* Caching a degraded result outlives the outage that caused it. The worst shape is
+     an Ollama outage plus a keyword-poor query: zero results, an authored "nothing
+     matched", cached under the live corpus version — so the same question keeps being
+     told memory is empty long after the model came back. */
+  const synthesisDegraded = input.synthesize && answer === undefined;
+  if (version !== undefined && !retrievalDegraded && !synthesisDegraded) {
     await writeCache(deps, version, key, output);
   }
 
@@ -85,6 +100,7 @@ export async function recall(input: RecallInput, deps: ToolDeps): Promise<Recall
       tool: "recall",
       cacheHit: false,
       resultCount: results.length,
+      degraded: retrievalDegraded || synthesisDegraded,
       cacheMs,
       // Lexical and semantic share one figure because they run concurrently;
       // separate numbers would imply a sequence that is not there.
@@ -179,8 +195,17 @@ async function synthesize(
   query: string,
   results: readonly RecallResult[],
   deps: ToolDeps,
+  retrievalDegraded: boolean,
 ): Promise<string | undefined> {
   if (results.length === 0) {
+    /* DD-042's "an authored sentence cannot hallucinate" holds only if the search
+       actually ran. Asserting the corpus had nothing, when half of retrieval was
+       down, is a confident wrong answer — exactly what the honesty instruction in
+       the synthesis prompt exists to prevent. */
+    if (retrievalDegraded) {
+      deps.log.warn({ tool: "recall" }, "no results and retrieval degraded, omitting answer");
+      return undefined;
+    }
     return NO_RESULTS_ANSWER;
   }
 

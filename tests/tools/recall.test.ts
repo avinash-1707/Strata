@@ -109,6 +109,38 @@ describe("recall: the happy path", () => {
     expect(found.answer).toContain("No stored memories matched");
     expect(deps.ollama.generateCalls).toEqual([]);
   });
+
+  /* DD-042's "an authored sentence cannot hallucinate" holds only if the search
+     actually ran. Asserting the corpus is empty while half of retrieval was down is a
+     confident wrong answer. */
+  it("omits the answer when there are no results and retrieval degraded", async () => {
+    const { deps, log } = withLog({ ollama: { embed: "unavailable" } });
+
+    const found = await recall(ask(), deps);
+
+    expect(found.results).toEqual([]);
+    expect(found).not.toHaveProperty("answer");
+    expect(log.messages("warn")).toContain(
+      "no results and retrieval degraded, omitting answer",
+    );
+  });
+
+  /* MAX_RECALL_K is 50 while the per-ranker candidate budget is 20, so a fixed limit
+     would cap a k=50 request at the size of the two lists' union. */
+  it("asks each ranker for at least k candidates", async () => {
+    const deps = createFakeDeps({
+      store: {
+        rows: Array.from({ length: 40 }, (_unused, index) => ({
+          id: `row-${String(index)}`,
+          summary: `postgres pool entry ${String(index)}`,
+        })),
+      },
+    });
+
+    const found = await recall(ask({ k: 40, synthesize: false }), deps);
+
+    expect(found.results).toHaveLength(40);
+  });
 });
 
 describe("recall: the two search paths run concurrently", () => {
@@ -336,6 +368,46 @@ describe("recall: the cache (DD-010, DD-011)", () => {
     // A write under a version bumped mid-pipeline would resurrect the stale entry
     // DD-010 exists to make unreachable.
     expect(deps.cache.keys[0]).toContain("recall:v5:");
+  });
+
+  /* A cached degraded result outlives the outage that produced it. The worst shape:
+     Ollama down, a keyword-poor query, zero results, an authored "nothing matched"
+     stored under the live corpus version — so the same question keeps being told
+     memory is empty long after the model came back. */
+  it("does not cache a result computed while a search path was down", async () => {
+    const deps = createFakeDeps({ store: { rows: ROWS }, ollama: { embed: "unavailable" } });
+
+    const found = await recall(ask(), deps);
+
+    expect(found.results.length).toBeGreaterThan(0);
+    expect(deps.cache.keys).toEqual([]);
+  });
+
+  it("does not cache when synthesis failed", async () => {
+    const deps = createFakeDeps({ store: { rows: ROWS }, ollama: { generate: "unavailable" } });
+
+    await recall(ask(), deps);
+
+    expect(deps.cache.keys).toEqual([]);
+  });
+
+  it("re-runs the pipeline once the outage clears, rather than serving the degraded result", async () => {
+    const deps = createFakeDeps({ store: { rows: ROWS }, ollama: { embed: "unavailable" } });
+    await recall(ask(), deps);
+
+    deps.ollama.setEmbedMode("ok");
+    const recovered = await recall(ask(), deps);
+
+    expect(deps.cache.hits).toBe(0);
+    expect(recovered.results.some((result) => result.similarity !== undefined)).toBe(true);
+  });
+
+  it("still caches a healthy result", async () => {
+    const deps = createFakeDeps({ store: { rows: ROWS } });
+
+    await recall(ask(), deps);
+
+    expect(deps.cache.keys).toHaveLength(1);
   });
 
   it("runs the full pipeline and still serves when Redis is down", async () => {

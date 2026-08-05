@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { MAX_ENHANCEMENT_ATTEMPTS } from "../../src/config/budgets.js";
+import { ENHANCEMENT_TIMEOUT_MS, MAX_ENHANCEMENT_ATTEMPTS } from "../../src/config/budgets.js";
 import { isStrataError } from "../../src/errors.js";
 import { repairPass } from "../../src/jobs/repair.js";
 import { remember } from "../../src/tools/remember.js";
@@ -97,14 +97,63 @@ describe("the repair pass (DD-005 stage 3)", () => {
     await expect(repairPass(deps, 2)).resolves.toMatchObject({ examined: 2 });
   });
 
-  it("skips a row that needs nothing, without calling the model", async () => {
+  /* Counted as degraded, not skipped, and the attempt is recorded — because the
+     backlog matches on status='raw' and this row would otherwise match forever,
+     holding a slot in every pass. */
+  it("counts an unrepairable row against its attempts so it eventually leaves", async () => {
     const deps = createFakeDeps();
     deps.store.seed([{ id: "a", summary: "s", status: "raw", rawContent: null }]);
 
     const report = await repairPass(deps);
 
-    expect(report).toMatchObject({ examined: 1, skipped: 1, degraded: 0 });
+    expect(report).toMatchObject({ examined: 1, degraded: 1, skipped: 0 });
     expect(deps.ollama.generateCalls).toEqual([]);
+    expect(deps.store.rows[0]?.enhancementAttempts).toBe(1);
+  });
+
+  it("stops claiming an unrepairable row once it caps out", async () => {
+    const deps = createFakeDeps();
+    deps.store.seed([{ id: "a", summary: "s", status: "raw", rawContent: null }]);
+
+    for (let pass = 0; pass < MAX_ENHANCEMENT_ATTEMPTS; pass += 1) {
+      await repairPass(deps);
+    }
+
+    await expect(repairPass(deps)).resolves.toMatchObject({ examined: 0 });
+  });
+
+  /* DD-010. The pass rewrites summaries and adds vectors, so a recall cached before it
+     ran is stale in both its text and its result set. Nothing else bumps for it: the
+     pass has no insert in front of it. */
+  it("bumps the corpus version after upgrading a row", async () => {
+    const deps = createFakeDeps({ cache: { initialVersion: 5 } });
+    deps.store.seed([{ id: "a", summary: "s", status: "raw" }]);
+
+    await repairPass(deps);
+
+    await expect(deps.cache.getCorpusVersion()).resolves.toBe(6);
+  });
+
+  it("does not bump when it repaired nothing", async () => {
+    const deps = createFakeDeps({ cache: { initialVersion: 5 } });
+
+    await repairPass(deps);
+
+    await expect(deps.cache.getCorpusVersion()).resolves.toBe(5);
+  });
+
+  it("repairs even when a generation takes longer than the write-path budget", async () => {
+    /* The pass must not inherit ENHANCEMENT_TIMEOUT_MS. That 5s bound exists because
+       stage 2 blocks an agent; nothing waits on the repair pass, and on a CPU-only
+       target a real generation legitimately exceeds it (DD-028). */
+    const deps = createFakeDeps({ config: { OLLAMA_TIMEOUT_MS: 45_000 } });
+    deps.store.seed([{ id: "a", summary: "s", status: "raw" }]);
+
+    await repairPass(deps);
+
+    const budgets = deps.ollama.generateCalls.map((call) => call.options?.timeoutMs);
+    expect(budgets[0]).toBe(45_000);
+    expect(budgets[0]).not.toBe(ENHANCEMENT_TIMEOUT_MS);
   });
 
   it("fails when Postgres is down — the backlog query is not optional", async () => {

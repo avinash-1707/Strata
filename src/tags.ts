@@ -11,14 +11,30 @@ const MAX_TAG_LENGTH = 48;
 /**
  * A small instruct model asked for keywords will occasionally return a dozen.
  * Past a handful they stop discriminating and `search_by_tag` returns everything.
+ *
+ * A **write-side** budget: it decides how many tags a memory is worth carrying. Read
+ * paths must not reuse it — silently dropping search terms narrows nothing, it
+ * returns rows that do not match the query that was asked.
  */
-const MAX_TAGS = 12;
+export const MAX_TAGS = 12;
 
 /**
  * Order is preserved across sources, so caller tags (passed first) outrank
  * model-suggested ones when the cap truncates.
  */
 export function normalizeTags(
+  ...sources: readonly (readonly string[] | undefined)[]
+): string[] {
+  return normalizeTagsWithin(MAX_TAGS, ...sources);
+}
+
+/**
+ * Normalization without the write-side cap. `search_by_tag` uses this because the
+ * contract accepts `MAX_TAGS_PER_CALL` (24) tags and dropping any of them turns a
+ * `match: "all"` query into a different, wrong query.
+ */
+export function normalizeTagsWithin(
+  max: number,
   ...sources: readonly (readonly string[] | undefined)[]
 ): string[] {
   const seen = new Set<string>();
@@ -32,7 +48,7 @@ export function normalizeTags(
       if (tag !== undefined) {
         seen.add(tag);
       }
-      if (seen.size >= MAX_TAGS) {
+      if (seen.size >= max) {
         return [...seen];
       }
     }

@@ -95,6 +95,25 @@ describe("search_by_tag", () => {
     expect(found.results.map((row) => row.id).sort()).toEqual(["a", "b"]);
   });
 
+  /* normalizeTags caps at 12, which is a *write-side* budget. The contract accepts 24,
+     and dropping search terms under match: "all" does not narrow the query — it
+     returns rows satisfying only a prefix of it. */
+  it("does not drop search tags at the write-side cap of 12", async () => {
+    const many = Array.from({ length: 20 }, (_unused, index) => `tag-${String(index)}`);
+    const deps = createFakeDeps({
+      store: {
+        rows: [
+          { id: "all", summary: "s", tags: many },
+          { id: "prefix", summary: "s", tags: many.slice(0, 12) },
+        ],
+      },
+    });
+
+    const found = await searchByTag(query({ tags: many, match: "all" }), deps);
+
+    expect(found.results.map((row) => row.id)).toEqual(["all"]);
+  });
+
   it("never returns a non-live row (DD-012)", async () => {
     const deps = createFakeDeps({
       store: {

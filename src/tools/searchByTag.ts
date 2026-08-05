@@ -1,7 +1,8 @@
+import { MAX_TAGS_PER_CALL } from "../contracts/common.js";
 import type { SearchByTagInput, SearchByTagOutput } from "../contracts/searchByTag.js";
 import type { ToolDeps } from "../deps.js";
 import { StrataError } from "../errors.js";
-import { normalizeTags } from "../tags.js";
+import { normalizeTagsWithin } from "../tags.js";
 
 /**
  * Unaffected by Redis and Ollama: no cache, no model, no version bump. Postgres
@@ -11,9 +12,11 @@ export async function searchByTag(
   input: SearchByTagInput,
   deps: ToolDeps,
 ): Promise<SearchByTagOutput> {
-  // `remember` stores normalized tags, so searching with raw ones would silently
-  // match nothing.
-  const tags = normalizeTags(input.tags);
+  /* `remember` stores normalized tags, so searching with raw ones would silently match
+     nothing. Capped at the contract's own limit, not at `normalizeTags`' write-side
+     cap of 12: with `match: "all"` and more than 12 tags, dropping the rest returns
+     rows that satisfy only a prefix of the query. */
+  const tags = normalizeTagsWithin(MAX_TAGS_PER_CALL, input.tags);
 
   if (tags.length === 0) {
     // Not an empty result: `match: "all"` over an empty array matches every row,

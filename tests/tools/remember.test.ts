@@ -38,10 +38,25 @@ describe("remember: the durable commit (DD-005 stage 1)", () => {
     expect(row?.rawContent).toBe(CONTENT);
   });
 
-  it("bumps the corpus version so no earlier cached recall survives (DD-010)", async () => {
+  /* Twice, deliberately: the durable insert is one visible mutation and the
+     enhancement that replaces the summary and adds the vector is another. They are
+     separated by seconds of model calls, so a recall landing between them caches a
+     result carrying the raw placeholder summary and no embedding (DD-010). */
+  it("bumps the corpus version for the insert and again for the enhancement (DD-010)", async () => {
     const deps = createFakeDeps({ cache: { initialVersion: 7 } });
     await remember({ content: CONTENT }, deps);
 
+    await expect(deps.cache.getCorpusVersion()).resolves.toBe(9);
+  });
+
+  it("bumps only once when the enhancement degrades", async () => {
+    const deps = createFakeDeps({
+      cache: { initialVersion: 7 },
+      ollama: { generate: "unavailable" },
+    });
+    await remember({ content: CONTENT }, deps);
+
+    // Nothing was rewritten, so nothing cached is stale beyond the insert itself.
     await expect(deps.cache.getCorpusVersion()).resolves.toBe(8);
   });
 
@@ -340,16 +355,18 @@ describe("enhancement: the stage-2 budget", () => {
     expect(deps.ollama.embedCalls).toEqual([]);
   });
 
-  it("cannot compress a row whose raw content is gone", async () => {
+  it("cannot compress a row whose raw content is gone, and counts the attempt", async () => {
     const { deps, log } = withLog();
     const [row] = deps.store.seed([{ summary: "s", status: "raw", rawContent: null }]);
 
     const result = await enhanceMemory(row!, deps);
 
-    expect(result.outcome).toBe("skipped");
+    expect(result.outcome).toBe("degraded");
     expect(log.messages("warn")).toContain("cannot compress: raw content absent");
-    // No attempt recorded: retrying cannot help, and the cap is for transient faults.
-    expect(deps.store.rows[0]?.enhancementAttempts).toBe(0);
+    /* Counted even though retrying cannot help. The backlog matches on status='raw',
+       so without the counter this row holds a slot in every pass forever — DD-041's
+       starvation reached by a different arm. */
+    expect(deps.store.rows[0]?.enhancementAttempts).toBe(1);
   });
 
   it("embeds a compressed row without re-compressing it", async () => {

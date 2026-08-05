@@ -6,6 +6,7 @@ import { compressionJsonSchema, parseCompressionResult } from "../ollama/parse.j
 import { buildCompressionPrompt } from "../ollama/prompts.js";
 import type { MemoryRecord } from "../store/types.js";
 import { normalizeTags } from "../tags.js";
+import { bumpCorpusVersion } from "./corpus.js";
 
 /**
  * DD-005 stage 2, shared by `remember` and the repair job. The row is already
@@ -49,7 +50,12 @@ export async function enhanceMemory(
     const content = record.rawContent;
     if (content === null) {
       deps.log.warn({ id: record.id }, "cannot compress: raw content absent");
-      return { record, outcome: "skipped" };
+      /* An attempt is recorded even though retrying cannot help, because the backlog
+         query matches on `status='raw'` and this row will match forever. Without the
+         counter it holds a slot in every pass — the starvation DD-041 closes, reached
+         by a different arm. */
+      await recordAttempt(record.id, deps);
+      return { record, outcome: "degraded" };
     }
 
     const compressed = await compress(content, deps, remaining(deadline));
@@ -84,6 +90,13 @@ export async function enhanceMemory(
     deps.log.warn({ id: record.id }, "enhancement discarded: row no longer live");
     return { record, outcome: "skipped" };
   }
+
+  /* DD-010: this is a mutation, so it bumps. Enhancement replaces the summary an
+     answer is synthesized from and adds the vector semantic search needs, so a recall
+     cached before it ran is stale in both its text and its result set. `remember`
+     bumping for the raw insert does not cover this: the two are separated by seconds
+     of model calls, and the repair pass has no insert in front of it at all. */
+  await bumpCorpusVersion(deps, "enhance");
 
   if (updated.needsEmbedding) {
     await recordAttempt(record.id, deps);

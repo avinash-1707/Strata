@@ -28,7 +28,13 @@ export async function repairPass(
   // Sequential, not Promise.all: the target has one CPU-bound Ollama (DD-028), so
   // concurrent rows would queue inside it while also starving foreground calls.
   for (const record of backlog) {
-    const { outcome } = await enhanceMemory(record, deps);
+    /* The per-call ceiling, NOT ENHANCEMENT_TIMEOUT_MS. That 5s bound exists because
+       stage 2 runs inline on the write path with an agent waiting; nothing waits here.
+       Reusing it on a CPU-only target, where a 3B generation legitimately takes tens
+       of seconds (DD-028), would time out every compression, count an attempt, and
+       within MAX_ENHANCEMENT_ATTEMPTS cycles cap out every row the pass exists to
+       repair — and the counter is never reset (DD-041). */
+    const { outcome } = await enhanceMemory(record, deps, deps.config.OLLAMA_TIMEOUT_MS);
     if (outcome === "enhanced") {
       enhanced += 1;
     } else if (outcome === "degraded") {

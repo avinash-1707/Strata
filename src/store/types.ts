@@ -8,7 +8,16 @@ export interface MemoryStore {
   /** DD-020: an exact-duplicate `remember` returns the existing live row. */
   findLiveByContentHash(contentHash: string): Promise<MemoryRecord | undefined>;
 
-  /** DD-005 stage 1 — the durable commit. No model output involved. */
+  /**
+   * DD-005 stage 1 — the durable commit. No model output involved.
+   *
+   * **Must be conflict-tolerant.** `memories_hash_live_idx` is unique over live rows,
+   * and two `remember` calls can both pass `findLiveByContentHash` before either
+   * inserts — one MCP, one REST, in the same process. A plain insert then raises
+   * 23505 and tells the caller the write failed. Implementations do
+   * `on conflict … do nothing` and re-select, returning the winning row, so a losing
+   * racer still gets a durable id (DD-020).
+   */
   insertRaw(memory: NewMemory): Promise<MemoryRecord>;
 
   /**
@@ -49,6 +58,12 @@ export interface MemoryStore {
    *
    * The caller bumps the corpus version, as it does for `forget`. A restored memory is
    * visible again, so any cached recall that omitted it is stale (DD-010).
+   *
+   * Also `false` when a **live row already holds this row's `content_hash`** — which
+   * is reachable precisely because the unique index is partial: forget X, remember the
+   * same content, then try to restore X. Restoring would violate the index, so the
+   * answer is "not restorable", not an error. An operator who wants X specifically
+   * must forget the newer row first.
    */
   restore(id: string): Promise<boolean>;
 

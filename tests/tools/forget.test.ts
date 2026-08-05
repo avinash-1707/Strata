@@ -4,6 +4,7 @@ import { DEFAULT_RECALL_K } from "../../src/contracts/recall.js";
 import { StrataError, isStrataError } from "../../src/errors.js";
 import { forget, restore } from "../../src/tools/forget.js";
 import { recall } from "../../src/tools/recall.js";
+import { remember } from "../../src/tools/remember.js";
 import type { FakeDeps, FakeDepsOptions } from "../fakes/fakeDeps.js";
 import { createFakeDeps } from "../fakes/fakeDeps.js";
 import { createRecordingLogger } from "../support/recordingLogger.js";
@@ -186,6 +187,30 @@ describe("restore: the inverse of forget (DD-039)", () => {
 
     await expect(restore({ id: "merged" }, deps)).resolves.toEqual({ restored: false });
     expect(deps.store.rows.find((row) => row.id === "merged")?.deletedAt).not.toBeNull();
+  });
+
+  /* Reachable exactly because memories_hash_live_idx is partial — which is what lets
+     forgotten content be stored again. Restoring here would violate the index, so the
+     honest answer is "not restorable", not a 503 on the one operation whose whole
+     purpose is recovery. */
+  it("refuses when a live row already holds the same content", async () => {
+    const deps = createFakeDeps();
+    const first = await remember({ content: "a decision worth keeping" }, deps);
+    await forget({ id: first.id }, deps);
+    const replacement = await remember({ content: "a decision worth keeping" }, deps);
+    expect(replacement.id).not.toBe(first.id);
+
+    await expect(restore({ id: first.id }, deps)).resolves.toEqual({ restored: false });
+  });
+
+  it("allows the restore once the newer row is forgotten too", async () => {
+    const deps = createFakeDeps();
+    const first = await remember({ content: "a decision worth keeping" }, deps);
+    await forget({ id: first.id }, deps);
+    const replacement = await remember({ content: "a decision worth keeping" }, deps);
+    await forget({ id: replacement.id }, deps);
+
+    await expect(restore({ id: first.id }, deps)).resolves.toEqual({ restored: true });
   });
 
   it("fails when Postgres is down", async () => {
