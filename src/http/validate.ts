@@ -21,6 +21,27 @@ export function parseBody<S extends z.ZodType>(schema: S, body: unknown): z.infe
   return result.data;
 }
 
+/**
+ * Takes a reader rather than a body: a malformed payload throws inside `req.json()`,
+ * and letting that reach the error boundary as an unknown 500 would report a caller's
+ * broken JSON as a server fault.
+ */
+export async function parseJsonBody<S extends z.ZodType>(
+  schema: S,
+  read: () => Promise<unknown>,
+): Promise<z.infer<S>> {
+  let body: unknown;
+  try {
+    body = await read();
+  } catch (cause: unknown) {
+    throw new StrataError("INVALID_INPUT", "request body is not valid JSON", {
+      cause,
+      publicMessage: "request body is not valid JSON",
+    });
+  }
+  return parseBody(schema, body);
+}
+
 /** Field paths and codes only — never the rejected value. */
 function summarize(error: z.ZodError): string {
   const fields = error.issues.map((issue) => {

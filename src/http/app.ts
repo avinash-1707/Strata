@@ -5,6 +5,8 @@ import { describeUnknown, isStrataError, StrataError } from "../errors.js";
 import { bearerAuth } from "./auth.js";
 import { errorBody, statusForError, UNAUTHORIZED_HEADERS } from "./errors.js";
 import { registerHealthRoutes } from "./routes/health.js";
+import { registerMemoryRoutes } from "./routes/memories.js";
+import { registerRecallRoutes } from "./routes/recall.js";
 
 /**
  * Versioned because these routes are public API in the same sense the tool contracts
@@ -43,7 +45,11 @@ export function createHttpApp(deps: ToolDeps, options: HttpAppOptions = {}): Hon
     app.use(`${API_PREFIX}/*`, bearerAuth(token));
   }
 
+  /* Health stays on REST while the MCP tool is gone (DD-043): an operator, a
+     dashboard, and a container healthcheck all need it; an agent does not. */
   registerHealthRoutes(app, deps);
+  registerMemoryRoutes(app, deps);
+  registerRecallRoutes(app, deps);
 
   app.notFound((context) =>
     context.json(errorBody(new StrataError("NOT_FOUND", "no such endpoint")), 404),

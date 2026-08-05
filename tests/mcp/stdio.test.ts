@@ -31,6 +31,8 @@ interface RawFrame {
 interface RawSession {
   send(frame: unknown): void;
   waitForResponses(count: number): Promise<RawFrame[]>;
+  /** Resolves once `text` has appeared on stderr, which is a separate fd from stdout. */
+  waitForStderr(text: string): Promise<void>;
   /** Closes stdin, which is how a client disconnects without signalling. */
   disconnect(): void;
   signal(name: "SIGINT" | "SIGTERM"): void;
@@ -104,6 +106,20 @@ function startRaw(): RawSession {
         });
       }
       return frames.filter((frame) => frame.id !== undefined);
+    },
+    async waitForStderr(text) {
+      /* A JSON-RPC response and the stderr log line for the same call are separate
+         writes on separate fds, so the response arriving says nothing about the log
+         line having been flushed. Snapshotting stderr right after waitForResponses
+         made this assertion intermittently fail — reading it as "logging is broken"
+         when it only meant "not yet". */
+      const deadline = Date.now() + STARTUP_TIMEOUT_MS;
+      while (!stderr.includes(text)) {
+        if (Date.now() > deadline) {
+          throw new Error(`timed out waiting for stderr to contain ${text}\nstderr: ${stderr}`);
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      }
     },
     get malformed() {
       return malformed;
@@ -192,9 +208,9 @@ describe("stdio transport: raw stream inspection (DD-026)", { timeout: STARTUP_T
     }
   });
 
-  it("writes its logs to stderr instead", () => {
-    expect(session.stderr).toContain("listening on stdio");
-    expect(session.stderr).toContain("tool call completed");
+  it("writes its logs to stderr instead", async () => {
+    await session.waitForStderr("listening on stdio");
+    await session.waitForStderr("tool call completed");
   });
 
   it("keeps log output off stdout even at debug level", () => {
