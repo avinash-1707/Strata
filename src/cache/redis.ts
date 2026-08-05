@@ -92,7 +92,7 @@ export function createRedisCache(config: Config, log: Logger): Cache {
       try {
         const raw = await op("version read", () => client.get(CORPUS_VERSION_KEY));
         // Missing key → 0, so the first bump (INCR → 1) still invalidates: a get
-        // that defaulted to 1 would collide with that first post-mutation INCR.
+        // that defaulted to 1 would collide with that first post-mutation INCR (DD-044).
         return raw === null ? 0 : Number.parseInt(raw, 10);
       } catch (cause) {
         throw wrapError("CACHE_UNAVAILABLE", "could not read the corpus version", cause);
