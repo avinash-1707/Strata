@@ -56,6 +56,8 @@ export interface SeedMemory {
   readonly deletedAt?: Date | null;
   readonly createdAt?: Date;
   readonly lastRecalledAt?: Date | null;
+  readonly enhancementAttempts?: number;
+  readonly lastAttemptAt?: Date | null;
 }
 
 export interface FakeStoreOptions {
@@ -93,7 +95,10 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
       const record: MemoryRecord = {
         id,
         summary: seed.summary,
-        rawContent: seed.rawContent ?? seed.summary,
+        // Not `??`: an explicit `rawContent: null` is a meaningful case (a purged
+        // row), and nullish-coalescing would silently replace it with the summary —
+        // making any test about absent raw content pass for the wrong reason.
+        rawContent: seed.rawContent === undefined ? seed.summary : seed.rawContent,
         contentHash: seed.contentHash ?? `hash-${id}`,
         status: seed.status ?? "compressed",
         needsEmbedding: seed.needsEmbedding ?? false,
@@ -108,6 +113,8 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
         deletedAt: seed.deletedAt ?? null,
         createdAt: seed.createdAt ?? new Date(SEED_EPOCH_MS + index * 1000),
         lastRecalledAt: seed.lastRecalledAt ?? null,
+        enhancementAttempts: seed.enhancementAttempts ?? 0,
+        lastAttemptAt: seed.lastAttemptAt ?? null,
       };
       if (seed.embedding != null) {
         embeddings.set(id, seed.embedding);
@@ -260,6 +267,8 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
         deletedAt: null,
         createdAt: new Date(),
         lastRecalledAt: null,
+        enhancementAttempts: 0,
+        lastAttemptAt: null,
       };
       rows.push(record);
       return record;
@@ -368,14 +377,30 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
       return true;
     },
 
-    async findEnhancementBacklog(limit) {
+    async findEnhancementBacklog(limit, maxAttempts) {
       await enter("findEnhancementBacklog");
       return live()
         .filter((row) => row.status === "raw" || row.needsEmbedding)
-        // Oldest first, so a row that always fails cannot hold a slot forever and
-        // starve everything behind it.
+        // DD-041: without this, a row that always fails holds its slot forever and
+        // starves everything behind it, because the order below is by age.
+        .filter((row) => row.enhancementAttempts < maxAttempts)
         .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
         .slice(0, limit);
+    },
+
+    async recordEnhancementAttempt(id) {
+      await enter("recordEnhancementAttempt");
+      // Searches `rows`, not `live()`: an attempt may be recorded against a row a
+      // concurrent forget has just removed, and losing the increment is worse than
+      // stamping a dead row.
+      const current = rows.find((row) => row.id === id);
+      if (current !== undefined) {
+        replace(id, {
+          ...current,
+          enhancementAttempts: current.enhancementAttempts + 1,
+          lastAttemptAt: new Date(),
+        });
+      }
     },
   };
 

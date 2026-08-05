@@ -56,8 +56,20 @@ export interface MemoryStore {
    * DD-005 stage 3: rows left at `raw` or awaiting an embedding, **oldest first**.
    * Named `find`, not `claim`: it takes no lock, which is correct for a
    * single-process server but must not be mistaken for `for update skip locked`.
+   *
+   * `maxAttempts` is a parameter rather than a constant here so the retry policy
+   * lives in `config/budgets.ts` with the rest of the design budgets; the store
+   * enforces the filter but does not own the number (DD-041).
    */
-  findEnhancementBacklog(limit: number): Promise<readonly MemoryRecord[]>;
+  findEnhancementBacklog(limit: number, maxAttempts: number): Promise<readonly MemoryRecord[]>;
+
+  /**
+   * Increments `enhancement_attempts` and stamps `last_attempt_at` (DD-041). Called
+   * whenever an enhancement pass leaves a row still needing work, which is what
+   * eventually lifts a permanently-failing row out of the backlog rather than
+   * letting it starve everything behind it.
+   */
+  recordEnhancementAttempt(id: string): Promise<void>;
 }
 
 /**
@@ -83,6 +95,9 @@ export interface MemoryRecord {
   readonly deletedAt: Date | null;
   readonly createdAt: Date;
   readonly lastRecalledAt: Date | null;
+  /** DD-041: failed-enhancement counter, the repair pass's starvation guard. */
+  readonly enhancementAttempts: number;
+  readonly lastAttemptAt: Date | null;
 }
 
 export interface NewMemory {

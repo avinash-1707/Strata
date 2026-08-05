@@ -10,6 +10,9 @@ function vector(seed: number): number[] {
 
 const LIMIT = 10;
 
+/** Local to these tests: the fake enforces the cap, it does not own the number. */
+const ATTEMPT_CAP = 3;
+
 describe("fake store: live-row filtering (DD-012)", () => {
   it("hides soft-deleted rows from every read", async () => {
     const store = createFakeStore({
@@ -333,8 +336,9 @@ describe("fake store: setDown covers the Postgres-down row of the failure table"
     await expect(store.searchByTag(["x"], "any", LIMIT)).rejects.toSatisfy(isDbFailure);
     await expect(store.touchUsage(["a"])).rejects.toSatisfy(isDbFailure);
     await expect(store.softDelete("a")).rejects.toSatisfy(isDbFailure);
-    await expect(store.findEnhancementBacklog(LIMIT)).rejects.toSatisfy(isDbFailure);
+    await expect(store.findEnhancementBacklog(LIMIT, ATTEMPT_CAP)).rejects.toSatisfy(isDbFailure);
     await expect(store.restore("a")).rejects.toSatisfy(isDbFailure);
+    await expect(store.recordEnhancementAttempt("a")).rejects.toSatisfy(isDbFailure);
     await expect(
       store.applyEnhancement("a", { summary: "s", tags: [], embedding: null, embeddingModel: null }),
     ).rejects.toSatisfy(isDbFailure);
@@ -438,8 +442,34 @@ describe("fake store: backlog (DD-005 stage 3)", () => {
       ],
     });
 
-    const claimed = await store.findEnhancementBacklog(LIMIT);
+    const claimed = await store.findEnhancementBacklog(LIMIT, ATTEMPT_CAP);
     expect(claimed.map((row) => row.id)).toEqual(["raw", "unembedded"]);
+  });
+
+  /* DD-041. Without the attempt filter, a row whose content always breaks
+     compression stays at the head of the oldest-first backlog forever and starves
+     everything behind it. */
+  it("drops rows that have exhausted their attempts", async () => {
+    const store = createFakeStore({
+      rows: [
+        { id: "poison", summary: "p", status: "raw", enhancementAttempts: ATTEMPT_CAP },
+        { id: "fresh", summary: "f", status: "raw" },
+      ],
+    });
+
+    const claimed = await store.findEnhancementBacklog(LIMIT, ATTEMPT_CAP);
+    expect(claimed.map((row) => row.id)).toEqual(["fresh"]);
+  });
+
+  it("counts an attempt and stamps when it happened", async () => {
+    const store = createFakeStore({ rows: [{ id: "a", summary: "s", status: "raw" }] });
+
+    await store.recordEnhancementAttempt("a");
+    await store.recordEnhancementAttempt("a");
+
+    const row = store.rows.find((candidate) => candidate.id === "a");
+    expect(row?.enhancementAttempts).toBe(2);
+    expect(row?.lastAttemptAt).toBeInstanceOf(Date);
   });
 });
 
