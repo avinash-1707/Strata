@@ -12,6 +12,11 @@
 set -e
 cd /Users/avinash/code/projects/Strata
 
+# Counted, and the script exits non-zero if any probe disagrees. Without this the
+# whole suite printed FAIL and still exited 0, so `pnpm seamcheck` could not fail a
+# build — a guard that cannot fail is not a guard.
+FAILURES=0
+
 probe() {
   local file="$1" import="$2" label="$3" expect="$4"
   mkdir -p "$(dirname "$file")"
@@ -29,7 +34,12 @@ probe() {
 
   if [[ $existed == 1 ]]; then mv "$file.seambak" "$file"; else rm -f "$file"; fi
 
-  if [[ "$got" == "$expect" ]]; then echo "  ok   $label -> $got"; else echo "  FAIL $label -> $got (expected $expect)"; fi
+  if [[ "$got" == "$expect" ]]; then
+    echo "  ok   $label -> $got"
+  else
+    echo "  FAIL $label -> $got (expected $expect)"
+    FAILURES=$((FAILURES + 1))
+  fi
 }
 
 echo "inbound: who may import src/db"
@@ -58,7 +68,10 @@ probe src/mcp/tools/probe.ts       ../../../tests/fakes/fakeDeps.js "mcp -> fake
 
 echo "permitted"
 probe src/mcp/tools/probe.ts       ../../store/types.js    "tools -> MemoryStore" ALLOWED
-probe src/mcp/tools/probe.ts       ../../contracts.js      "tools -> contracts"   ALLOWED
+# A real module, deliberately. This pointed at ../../contracts.js, which stopped
+# existing when contracts became a directory — and since an unresolvable import still
+# reports ALLOWED, the probe passed while testing nothing.
+probe src/mcp/tools/probe.ts       ../../contracts/remember.js "tools -> contracts" ALLOWED
 probe src/store/pg/probe.ts        ../types.js             "store/pg -> store"    ALLOWED
 
 echo "new surfaces (tools must not reach a surface; http == mcp restrictions)"
@@ -75,7 +88,23 @@ probe src/tools/probe.ts     ../deps.js              "tools -> ToolDeps"    ALLO
 probe src/http/probe.ts      ../tools/health.js      "http -> tools"        ALLOWED
 probe src/mcp/probe.ts       ../tools/health.js      "mcp -> tools"         ALLOWED
 
+echo "jobs (a background job composes tools; it is not a surface)"
+probe src/jobs/probe.ts   ../db/types.js          "jobs -> db"         BLOCKED
+probe src/jobs/probe.ts   ../store/pg/index.js    "jobs -> store/pg"   BLOCKED
+probe src/jobs/probe.ts   ../mcp/invoke.js        "jobs -> mcp"        BLOCKED
+probe src/jobs/probe.ts   ../http/app.js          "jobs -> http"       BLOCKED
+probe src/jobs/probe.ts   ../tools/enhance.js     "jobs -> tools"      ALLOWED
+probe src/jobs/probe.ts   ../deps.js              "jobs -> ToolDeps"   ALLOWED
+probe src/jobs/probe.ts   ../store/types.js       "jobs -> MemoryStore" ALLOWED
+
 echo "production must not import test fakes"
 probe src/tools/probe.ts  ../../tests/fakes/fakeStore.js  "tools -> fake"  BLOCKED
 probe src/http/probe.ts   ../../tests/fakes/fakeDeps.js   "http -> fake"   BLOCKED
 probe src/store/probe.ts  ../../tests/fakes/fakeStore.js  "store -> fake"  BLOCKED
+probe src/jobs/probe.ts   ../../tests/fakes/fakeDeps.js   "jobs -> fake"   BLOCKED
+
+if (( FAILURES > 0 )); then
+  echo "\n$FAILURES seam probe(s) disagreed with the expected verdict."
+  exit 1
+fi
+echo "\nall seam probes agreed."
