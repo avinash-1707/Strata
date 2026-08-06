@@ -133,4 +133,11 @@ describe("loadConfig — coercion", () => {
     const token = "a".repeat(32);
     expect(loadConfig({ ...valid, MCP_AUTH_TOKEN: token }).MCP_AUTH_TOKEN).toBe(token);
   });
+
+  /* Compose's env_file turns a bare `MCP_AUTH_TOKEN=` into "" rather than omitting
+     it. Treating that as a too-short token refuses to boot over a setting that is
+     inert under stdio (DD-026). */
+  it("reads an empty auth token as absent rather than too short", () => {
+    expect(loadConfig({ ...valid, MCP_AUTH_TOKEN: "" }).MCP_AUTH_TOKEN).toBeUndefined();
+  });
 });

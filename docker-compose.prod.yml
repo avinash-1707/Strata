@@ -1,10 +1,19 @@
 # Production stack for the Ubuntu target (DD-027). Not for the Mac: this file is
 # the only place Ollama appears, and model weights never land on the dev machine.
 #
-#   docker compose -f docker-compose.prod.yml up -d --wait
+# Provisioning, in order. Each step is blocking and fails loudly:
 #
-# That brings up the substrate — Postgres, Redis, Ollama — and pulls both models.
-# It deliberately does NOT start the app; see the `strata` service below.
+#   cd /opt/strata
+#   cp .env.example .env && $EDITOR .env    # POSTGRES_PASSWORD has no default
+#   docker compose -f docker-compose.prod.yml up -d --wait          # substrate
+#   docker compose -f docker-compose.prod.yml run --rm ollama-pull  # models
+#   docker compose -f docker-compose.prod.yml --profile app build   # app image
+#
+# The pull is `run`, not a dependency of `up`: `--wait` reports a service with no
+# healthcheck as satisfied the moment it is *running*, so it returns 0 both while
+# a multi-GB pull is still downloading and after that pull has exited non-zero.
+# Gating provisioning on it would tick "both models respond" on a signal carrying
+# no information. `run` is synchronous and propagates the exit code.
 #
 # docker-compose.yml (dev) stays separate and unchanged: scripts/integration.sh
 # invokes plain `docker compose`, and folding these together would point the
@@ -49,12 +58,22 @@ services:
     # re-yields a version those entries were already cached under, and a
     # pre-forget generation becomes servable again — the DD-044 defect
     # reintroduced by an eviction policy. Fail the write instead.
+    #
+    # maxmemory is set explicitly because noeviction is already Redis's default:
+    # without a ceiling the policy is inert and the real behaviour is unbounded
+    # growth until the host OOM-killer takes the whole box. A bounded cache that
+    # refuses writes is the better failure. Note the cost of that refusal: under
+    # OOM, noeviction rejects every denyoom command — INCR included — so a
+    # `forget` bump can fail while reads keep serving. src/tools/corpus.ts logs
+    # that and continues, bounding the stale window at the 300s entry TTL.
     command:
       - redis-server
       - --save
       - ""
       - --appendonly
       - "no"
+      - --maxmemory
+      - 256mb
       - --maxmemory-policy
       - noeviction
     healthcheck:
@@ -84,17 +103,18 @@ services:
     # script reaches it over SSH port-forward instead (scripts/truth-find.ts).
     healthcheck:
       # `ollama list` round-trips the HTTP API, so this gates on the server
-      # answering rather than on the process existing.
+      # answering rather than on the process existing. Models load lazily per
+      # request, so this says nothing about whether either model is present —
+      # that is the pull step's job.
       test: ["CMD", "ollama", "list"]
       interval: 10s
       timeout: 10s
       retries: 30
-      # Weights are ~2.5 GB and the first start unpacks them on a laptop disk.
-      start_period: 60s
 
-  # One-shot: pulls both models, then exits 0. Idempotent — an already-present
-  # model is a no-op, so this is safe on every boot.
+  # Provisioning step, not a boot dependency — see the header. Profiled so `up`
+  # cannot fire it and forget it. Idempotent: an already-present model is a no-op.
   ollama-pull:
+    profiles: ["pull"]
     image: ollama/ollama:${OLLAMA_IMAGE_TAG:-0.32.6}
     depends_on:
       ollama:
@@ -110,32 +130,51 @@ services:
     restart: "no"
 
   # Behind a profile, so `up` above starts the substrate and stops. That is
-  # deliberate: src/main.ts serves MCP over stdio only, and src/mcp/stdio.ts tears
-  # down on stdin 'end' — a detached container reads EOF immediately and exits.
-  # A long-running app service is incoherent until Phase 12 picks the cross-host
-  # transport (DD-026). Until then a client starts one session per invocation:
+  # deliberate: src/main.ts serves MCP over stdio only, so there is no long-running
+  # server to detach — the process lives exactly as long as one client session.
+  # A long-running app service only becomes coherent when Phase 12 picks the
+  # cross-host transport (DD-026). Until then the client starts one per session:
   #
-  #   ssh ubuntu docker compose -f docker-compose.prod.yml run --rm -T strata
+  #   ssh ubuntu 'cd /opt/strata && docker compose -f docker-compose.prod.yml \
+  #     run --rm -T strata'
   #
-  # -T keeps stdin/stdout raw pipes; a TTY would corrupt the JSON-RPC framing.
-  # If Phase 12 chooses streamable HTTP, this becomes a normal long-running
-  # service with a published port and MCP_AUTH_TOKEN load-bearing.
+  # `cd` is required: ssh runs in $HOME, where the relative -f path, env_file, and
+  # build context all resolve to the wrong directory. -T keeps stdin/stdout raw
+  # pipes; a TTY would corrupt the JSON-RPC framing. (Compose writes its own
+  # progress to stderr, so stdout stays a clean protocol channel — DD-026.)
+  #
+  # WARNING — do not adopt this shape for concurrent clients before DD-045 lands.
+  # main.ts runs repairPass at boot and every REPAIR_INTERVAL_MS, so N sessions
+  # means N passes over one backlog, double-counting enhancement_attempts against
+  # a cap of 5; and with no session open, nothing repairs at all. DD-045's
+  # advisory lock plus a dedicated repair service is Phase 6 work.
   strata:
     profiles: ["app"]
     build:
       context: .
       dockerfile: Dockerfile
+    # Named and never pulled, so `run` starts an already-built image instead of
+    # compiling TypeScript inside the client's server-launch path — a build there
+    # would outlast any client startup timeout. Build is a provisioning step.
+    image: strata:local
+    pull_policy: never
     env_file: .env
+    # Single source of truth for the password: .env carries POSTGRES_PASSWORD, and
+    # a hand-written POSTGRES_URL in the same file would silently drift from it.
+    environment:
+      POSTGRES_URL: postgres://strata:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/strata
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-      # Migrations run at boot, but a missing model would only surface later as a
-      # degraded write (status:'raw'). Gate on the pull instead.
-      ollama-pull:
-        condition: service_completed_successfully
-    stdin_open: true
+      # Deliberately NOT the pull job. `run` re-executes its dependencies, so
+      # gating here would make every session shell out to registry.ollama.ai —
+      # which fails outright offline, contradicting the local-first premise. A
+      # missing model instead degrades one write to status:'raw', which is the
+      # path DD-005 exists to survive.
+      ollama:
+        condition: service_healthy
 
 volumes:
   pgdata:

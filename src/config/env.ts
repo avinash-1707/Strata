@@ -38,13 +38,21 @@ const envSchema = z.object({
   // Optional because it is load-bearing only under the HTTP transport; stdio over
   // SSH has no HTTP surface to authenticate (DD-026). Phase 12 enforces presence
   // when HTTP mode is enabled.
-  MCP_AUTH_TOKEN: z
-    .string()
-    .min(
-      MIN_AUTH_TOKEN_LENGTH,
-      `must be at least ${String(MIN_AUTH_TOKEN_LENGTH)} characters`,
-    )
-    .optional(),
+  //
+  // Empty reads as absent: Compose's `env_file` sets a bare `MCP_AUTH_TOKEN=` to
+  // "" rather than omitting it, so without this an operator who copies
+  // .env.example gets a hard CONFIG_INVALID about a setting that does nothing
+  // under the transport they are actually running.
+  MCP_AUTH_TOKEN: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z
+      .string()
+      .min(
+        MIN_AUTH_TOKEN_LENGTH,
+        `must be at least ${String(MIN_AUTH_TOKEN_LENGTH)} characters`,
+      )
+      .optional(),
+  ),
 
   // Compaction is destructive and LLM-driven, so it ships off (DD-012).
   COMPACTION_ENABLED: booleanFromEnv.default(false),
