@@ -1,0 +1,142 @@
+# Production stack for the Ubuntu target (DD-027). Not for the Mac: this file is
+# the only place Ollama appears, and model weights never land on the dev machine.
+#
+#   docker compose -f docker-compose.prod.yml up -d --wait
+#
+# That brings up the substrate — Postgres, Redis, Ollama — and pulls both models.
+# It deliberately does NOT start the app; see the `strata` service below.
+#
+# docker-compose.yml (dev) stays separate and unchanged: scripts/integration.sh
+# invokes plain `docker compose`, and folding these together would point the
+# integration run at a persistent database.
+
+name: strata
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: strata
+      # Fails the `up` outright when unset, rather than booting a LAN-reachable
+      # database with the dev password baked into docker-compose.yml.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: strata
+    # The durable half of the system. Unlike the dev stack (DD-030), this volume
+    # is the memory store — `down -v` here destroys every memory.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # No `ports`. Postgres is reached only over the compose network by `strata`;
+    # publishing it would expose the store to the whole LAN with one password.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U strata -d strata"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Two distinct settings, for two distinct failure modes:
+    #
+    # No persistence (--save "", --appendonly no): the corpus version counter and
+    # the cache entries it scopes must share a lifetime. Surviving a restart
+    # asymmetrically is what resurrects a stale generation.
+    #
+    # --maxmemory-policy noeviction: the version key carries no TTL while recall
+    # entries do. Under an LRU policy the version key can be evicted while the
+    # entries it scopes survive; the counter then resets to 0, a later INCR
+    # re-yields a version those entries were already cached under, and a
+    # pre-forget generation becomes servable again — the DD-044 defect
+    # reintroduced by an eviction policy. Fail the write instead.
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory-policy
+      - noeviction
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  ollama:
+    # Pinned, not :latest, and the floor is not arbitrary: /api/embed landed in
+    # v0.3.4 (older builds 404 it) and JSON-Schema-valued `format` in v0.5.0 —
+    # src/ollama/client.ts uses both. An unpinned tag also risks the opposite
+    # failure: ollama#11214 saw nomic-embed-text's effective n_ctx silently drop
+    # 8192 -> 2048 between two point releases. Re-run scripts/truth-find.ts before
+    # changing this (DD-029).
+    image: ollama/ollama:${OLLAMA_IMAGE_TAG:-0.32.6}
+    restart: unless-stopped
+    environment:
+      # Both models stay resident. With the default of 1 they evict each other on
+      # every alternating embed/generate call, and a cold reload on CPU costs far
+      # more than it does on a GPU (DD-028).
+      OLLAMA_MAX_LOADED_MODELS: "2"
+      OLLAMA_KEEP_ALIVE: "24h"
+    volumes:
+      - ollama:/root/.ollama
+    # Not published: only `strata` and the pull job call it. The truth-finding
+    # script reaches it over SSH port-forward instead (scripts/truth-find.ts).
+    healthcheck:
+      # `ollama list` round-trips the HTTP API, so this gates on the server
+      # answering rather than on the process existing.
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      # Weights are ~2.5 GB and the first start unpacks them on a laptop disk.
+      start_period: 60s
+
+  # One-shot: pulls both models, then exits 0. Idempotent — an already-present
+  # model is a no-op, so this is safe on every boot.
+  ollama-pull:
+    image: ollama/ollama:${OLLAMA_IMAGE_TAG:-0.32.6}
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      # Points the CLI at the server container instead of its own (unstarted) one.
+      OLLAMA_HOST: http://ollama:11434
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:?set EMBEDDING_MODEL in .env}
+      INSTRUCT_MODEL: ${INSTRUCT_MODEL:?set INSTRUCT_MODEL in .env}
+    entrypoint: ["/bin/sh", "-c"]
+    # $$ escapes compose interpolation so the shell expands these, not compose.
+    command: ['ollama pull "$${EMBEDDING_MODEL}" && ollama pull "$${INSTRUCT_MODEL}"']
+    restart: "no"
+
+  # Behind a profile, so `up` above starts the substrate and stops. That is
+  # deliberate: src/main.ts serves MCP over stdio only, and src/mcp/stdio.ts tears
+  # down on stdin 'end' — a detached container reads EOF immediately and exits.
+  # A long-running app service is incoherent until Phase 12 picks the cross-host
+  # transport (DD-026). Until then a client starts one session per invocation:
+  #
+  #   ssh ubuntu docker compose -f docker-compose.prod.yml run --rm -T strata
+  #
+  # -T keeps stdin/stdout raw pipes; a TTY would corrupt the JSON-RPC framing.
+  # If Phase 12 chooses streamable HTTP, this becomes a normal long-running
+  # service with a published port and MCP_AUTH_TOKEN load-bearing.
+  strata:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # Migrations run at boot, but a missing model would only surface later as a
+      # degraded write (status:'raw'). Gate on the pull instead.
+      ollama-pull:
+        condition: service_completed_successfully
+    stdin_open: true
+
+volumes:
+  pgdata:
+  ollama:

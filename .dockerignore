@@ -1,0 +1,31 @@
+# Build context hygiene. node_modules is reinstalled from the lockfile inside the
+# image, and dist is rebuilt — copying either in would let a Mac-built artifact
+# (darwin/arm64) shadow the linux/amd64 one the target actually needs.
+node_modules
+dist
+*.tsbuildinfo
+
+# Secrets must never enter an image layer. Compose injects real values via env_file
+# at run time; .env.example carries no secrets and is harmless but unused.
+.env
+.env.*
+
+# Nothing here affects a production build.
+.git
+.gitignore
+docs
+tests
+scripts
+vitest.config.ts
+eslint.config.js
+*.log
+.DS_Store
+README.md
+LICENSE
+context.md
+AGENTS.md
+CLAUDE.md
+docker-compose.yml
+docker-compose.prod.yml
+Dockerfile
+.dockerignore
