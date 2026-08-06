@@ -140,6 +140,35 @@ export default tseslint.config(
   },
 
   {
+    /* Standalone operator scripts. Not the MCP process, so stdout is a report
+       channel rather than a protocol channel and `no-console` has nothing to
+       protect here.
+
+       The import ban is the load-bearing part. scripts/truth-find.ts exists to
+       test whether src/ollama's assumptions match a real Ollama; importing the
+       code under test would make it agree with itself by construction and the
+       script would confirm the prefix convention, the endpoint shape, and the
+       response schema no matter what the server actually does (DD-029). */
+    files: ["scripts/**/*.ts"],
+    rules: {
+      "no-console": "off",
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/src/**", "../src/*", "../src/**"],
+              message:
+                "scripts/ may not import src/. A truth-finding script that reuses the " +
+                "code under test cannot falsify it. See DD-029.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  {
     files: ["eslint.config.js"],
     ...tseslint.configs.disableTypeChecked,
   },

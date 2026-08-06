@@ -17,6 +17,7 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "seamcheck": "./scripts/seamcheck.sh",
+    "truth-find": "tsx scripts/truth-find.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "dev:fake": "tsx tests/support/stdioHarness.ts",
