@@ -23,7 +23,10 @@ name: strata
 
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    # Pinned to a pgvector version, not the floating `pg16` tag: `hnsw.iterative_scan`
+    # needs 0.8+, and below it every semantic search fails on an unrecognized GUC
+    # (DD-046). Ollama is pinned for the same reason (DD-047).
+    image: pgvector/pgvector:0.8.6-pg16
     restart: unless-stopped
     environment:
       POSTGRES_USER: strata

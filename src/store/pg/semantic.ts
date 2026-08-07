@@ -11,6 +11,27 @@ import { MEMORY_COLUMNS, toMemoryRecord, vectorLiteral } from "./memories.js";
  */
 const HNSW_EF_SEARCH = 80;
 
+/**
+ * Filtered HNSW is post-filtered: the scan collects `ef_search` candidates by
+ * distance and *then* drops the ones the `where` clause excludes, replacing none of
+ * them. A session-scoped recall over a corpus larger than `ef_search` therefore
+ * returns a handful of rows — or zero — where hundreds match, with no error and no
+ * warning (DD-046). `relaxed_order` is acceptable because every row carries an
+ * explicit `similarity` and fusion re-ranks downstream (DD-016, DD-033).
+ *
+ * Requires pgvector ≥ 0.8; the compose images are pinned for it.
+ */
+const HNSW_ITERATIVE_SCAN = "relaxed_order";
+
+/**
+ * The ceiling on that iterative scan. Pinned rather than inherited: it is the only
+ * thing standing between a highly selective filter and a walk of the whole index,
+ * and a default that changed under us would change search latency silently. 20k is
+ * far above this deployment's corpus, so at present it never truncates a result —
+ * which is the intent. Correctness first at single-user scale (DD-017).
+ */
+const HNSW_MAX_SCAN_TUPLES = 20_000;
+
 interface SemanticRow extends MemoryRow {
   readonly similarity: number;
 }
@@ -32,9 +53,14 @@ export async function searchSemantic(
   // connections and a bare SET leaks into whatever query borrows that connection
   // next (DD-017).
   return db.withTransaction(async (tx) => {
-    // A GUC cannot be a bind parameter. The interpolated value is a module
-    // constant, never caller input.
-    await tx.query(`set local hnsw.ef_search = ${String(HNSW_EF_SEARCH)}`);
+    // A GUC cannot be a bind parameter. Every interpolated value is a module
+    // constant, never caller input. One statement, not three: this is a foreground
+    // read path and each round trip is on the agent's latency.
+    await tx.query(
+      `set local hnsw.ef_search = ${String(HNSW_EF_SEARCH)};
+       set local hnsw.iterative_scan = '${HNSW_ITERATIVE_SCAN}';
+       set local hnsw.max_scan_tuples = ${String(HNSW_MAX_SCAN_TUPLES)}`,
+    );
 
     const rows = await tx.query<SemanticRow>(
       // No tiebreak on the order by: HNSW supplies rows in distance order, and a

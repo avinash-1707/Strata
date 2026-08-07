@@ -10,7 +10,12 @@
 # collide with (or silently stand in for) the containers under test.
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    # Pinned to a pgvector version, not the floating `pg16` tag: searchSemantic
+    # sets `hnsw.iterative_scan`, which pgvector only understands from 0.8 (DD-046).
+    # On an older extension that GUC is an unrecognized parameter and every
+    # semantic search fails — a floating tag makes that a matter of when it is
+    # pulled.
+    image: pgvector/pgvector:0.8.6-pg16
     environment:
       POSTGRES_USER: strata
       POSTGRES_PASSWORD: strata
