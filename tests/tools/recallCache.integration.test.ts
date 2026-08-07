@@ -11,8 +11,9 @@ import type { ToolDeps } from "../../src/deps.js";
 import type { Db } from "../../src/db/types.js";
 import { contentHash } from "../../src/hash.js";
 import { createPgStore } from "../../src/store/pg/index.js";
-import type { MemoryStore } from "../../src/store/types.js";
-import { forget } from "../../src/tools/forget.js";
+import type { MemoryRecord, MemoryStore } from "../../src/store/types.js";
+import { forget, restore } from "../../src/tools/forget.js";
+import { health } from "../../src/tools/health.js";
 import { recall } from "../../src/tools/recall.js";
 import { remember } from "../../src/tools/remember.js";
 import { searchByTag } from "../../src/tools/searchByTag.js";
@@ -103,28 +104,59 @@ if (PG_URL === undefined || REDIS_URL === undefined) {
   });
 
   afterEach(async () => {
+    // Before the next truncate: an in-flight `touchUsage` is an uncommitted UPDATE,
+    // and `truncate` takes ACCESS EXCLUSIVE, so leaving one running turns the next
+    // test's setup into a lock wait that times out somewhere unrelated.
+    await background.settled();
     await cache.close();
   });
 
   /** Returns the id of a durable, compressed, embedded memory. */
-  async function seed(content: string, tags: readonly string[]): Promise<string> {
-    const written = await remember({ content, tags: [...tags] }, deps);
+  async function seed(
+    content: string,
+    tags: readonly string[],
+    sessionId?: string,
+  ): Promise<string> {
+    const written = await remember(
+      {
+        content,
+        tags: [...tags],
+        ...(sessionId === undefined ? {} : { session_id: sessionId }),
+      },
+      deps,
+    );
     expect(written.status).toBe("compressed");
     return written.id;
   }
 
-  async function recallCountOf(content: string): Promise<number> {
+  /**
+   * Only the query embeddings. Seeding pushes `document` embeds onto the same array,
+   * so a raw length makes the hit/miss inference depend on nothing else having run.
+   */
+  function queryEmbeds(): number {
+    return ollama.embedCalls.filter((call) => call.kind === "query").length;
+  }
+
+  async function liveRow(content: string): Promise<MemoryRecord> {
     const row = await store.findLiveByContentHash(contentHash(content));
     if (row === undefined) {
       throw new Error("the seeded memory is gone; the test arranged the wrong state");
     }
-    return row.recallCount;
+    return row;
+  }
+
+  async function recallCountOf(content: string): Promise<number> {
+    return (await liveRow(content)).recallCount;
+  }
+
+  async function idOf(content: string): Promise<string> {
+    return (await liveRow(content)).id;
   }
 
   describe("a forget invalidates the cache it would otherwise be served from (DD-010)", () => {
     it("does not return the forgotten memory to an identical repeat query", async () => {
       const idA = await seed(CONTENT_A, ["pool"]);
-      await seed(CONTENT_B, ["pgvector"]);
+      const idB = await seed(CONTENT_B, ["pgvector"]);
 
       const first = await recall(ask(), deps);
       expect(ids(first.results)).toContain(idA);
@@ -143,6 +175,10 @@ if (PG_URL === undefined || REDIS_URL === undefined) {
 
       const second = await recall(ask(), deps);
       expect(ids(second.results)).not.toContain(idA);
+      // The positive control: `not.toContain` also holds over an empty list, so a
+      // forget that over-deleted, or a recall that stopped answering, would read as
+      // DD-010 working.
+      expect(ids(second.results)).toContain(idB);
 
       /* The pre-forget generation is still physically in Redis and still names the
          forgotten memory. Only the version prefix makes it unreachable — which is
@@ -154,7 +190,7 @@ if (PG_URL === undefined || REDIS_URL === undefined) {
     it("keeps serving from cache when the forget matched nothing", async () => {
       await seed(CONTENT_A, ["pool"]);
       await recall(ask(), deps);
-      const before = ollama.embedCalls.length;
+      const before = queryEmbeds();
 
       await expect(
         forget({ id: "00000000-0000-4000-8000-0000000000ff" }, deps),
@@ -163,53 +199,70 @@ if (PG_URL === undefined || REDIS_URL === undefined) {
       await recall(ask(), deps);
 
       // No bump, so the second recall is still a hit: it never embedded the query.
-      expect(ollama.embedCalls.length).toBe(before);
+      expect(queryEmbeds()).toBe(before);
     });
   });
 
   describe("usage tracking survives the cache (DD-011)", () => {
     it("increments recall_count on a cache hit, not just on a miss", async () => {
-      await seed(CONTENT_A, ["pool"]);
+      await seed(CONTENT_A, ["pool"], "session-a");
+      /* Out of scope for every recall below, so it must never be touched. Without a
+         row the query cannot reach, a `touchUsage` that lost its id predicate passes
+         this test. The scope filter does the excluding, not the ranking: the fake's
+         vectors are pseudorandom, so a `k=1` cut would decide it by luck. */
+      await seed(CONTENT_B, ["pgvector"], "session-b");
+      const scoped = ask({ session_id: "session-a" });
 
-      await recall(ask(), deps);
+      const miss = await recall(scoped, deps);
+      expect(ids(miss.results)).toEqual([await idOf(CONTENT_A)]);
       await background.settled();
       const afterMiss = await recallCountOf(CONTENT_A);
       expect(afterMiss).toBe(1);
 
-      const embedsBefore = ollama.embedCalls.length;
-      await recall(ask(), deps);
+      const embedsBefore = queryEmbeds();
+      await recall(scoped, deps);
       // Proves the second call was served from cache: a miss embeds the query.
-      expect(ollama.embedCalls.length).toBe(embedsBefore);
+      expect(queryEmbeds()).toBe(embedsBefore);
 
       await background.settled();
       await expect(recallCountOf(CONTENT_A)).resolves.toBe(afterMiss + 1);
+      await expect(recallCountOf(CONTENT_B)).resolves.toBe(0);
       expect(background.failures).toEqual([]);
     });
   });
 
   describe("cache keys separate the requests that must not share an answer", () => {
+    /** Asserts the entry a request of this shape must have left behind. */
+    async function expectCached(key: { k: number; synthesize: boolean }): Promise<void> {
+      const version = await cache.getCorpusVersion();
+      const composed = composeRecallKey(version, { query: ask().query, ...key });
+      await expect(raw.exists(composed)).resolves.toBe(1);
+    }
+
     it("does not serve a k=8 entry to a k=50 request", async () => {
       await seed(CONTENT_A, ["pool"]);
       await recall(ask({ k: 8 }), deps);
-      const embedsBefore = ollama.embedCalls.length;
+      await expectCached({ k: 8, synthesize: true });
+      const embedsBefore = queryEmbeds();
 
       await recall(ask({ k: 50 }), deps);
 
-      expect(ollama.embedCalls.length).toBe(embedsBefore + 1);
+      expect(queryEmbeds()).toBe(embedsBefore + 1);
     });
 
     it("never answers synthesize:false out of a synthesized entry", async () => {
       await seed(CONTENT_A, ["pool"]);
       const synthesized = await recall(ask({ synthesize: true }), deps);
       expect(synthesized.answer).toBeDefined();
-      const generatesBefore = ollama.generateCalls.length;
+      // The premise: there *is* a cached answer for this query to be served wrongly.
+      await expectCached({ k: DEFAULT_RECALL_K, synthesize: true });
+      const embedsBefore = queryEmbeds();
 
       const plain = await recall(ask({ synthesize: false }), deps);
 
       expect(plain).not.toHaveProperty("answer");
-      // And it got there without asking the model, so the absence is the key's
-      // doing rather than a synthesis that happened to fail.
-      expect(ollama.generateCalls.length).toBe(generatesBefore);
+      // Not a cheaper answer from the same entry: a separate key, hence a real miss.
+      expect(queryEmbeds()).toBe(embedsBefore + 1);
     });
   });
 
@@ -224,30 +277,38 @@ if (PG_URL === undefined || REDIS_URL === undefined) {
 
     it("serves every tool, and says so", async () => {
       const downLog = createRecordingLogger();
-      const downCache = createRedisCache({ ...config, REDIS_URL: DEAD_REDIS }, downLog);
+      const downConfig: Config = { ...config, REDIS_URL: DEAD_REDIS };
+      const downCache = createRedisCache(downConfig, downLog);
+      const downBackground = createTrackingBackgroundRunner(downLog);
       const downDeps: ToolDeps = {
         store,
         cache: downCache,
         ollama,
-        config,
+        config: downConfig,
         log: downLog,
-        background: createTrackingBackgroundRunner(downLog),
+        background: downBackground,
       };
 
       try {
-        const written = await remember(
-          { content: CONTENT_A, tags: ["pool"] },
-          downDeps,
-        );
+        const written = await remember({ content: CONTENT_A, tags: ["pool"] }, downDeps);
         expect(written.status).toBe("compressed");
 
         const found = await recall(ask(), downDeps);
         expect(ids(found.results)).toContain(written.id);
 
+        // A guard, not evidence: `search_by_tag` never touches the cache by design,
+        // so this is here to catch someone later giving it one.
         const tagged = await searchByTag({ tags: ["pool"], match: "any", limit: 20 }, downDeps);
         expect(ids(tagged.results)).toContain(written.id);
 
+        await expect(health({}, downDeps)).resolves.toMatchObject({
+          cache: "down",
+          corpus_version: null,
+        });
+
         await expect(forget({ id: written.id }, downDeps)).resolves.toEqual({ deleted: true });
+        // The other bumping mutation (DD-039), and the one most likely to be missed.
+        await expect(restore({ id: written.id }, downDeps)).resolves.toEqual({ restored: true });
 
         // Degrading silently is the failure mode: the corpus keeps working while
         // nobody learns the cache is gone.
@@ -255,6 +316,7 @@ if (PG_URL === undefined || REDIS_URL === undefined) {
         expect(warnings).toContain("corpus version bump failed");
         expect(warnings).toContain("corpus version unavailable");
       } finally {
+        await downBackground.settled();
         await downCache.close();
       }
     }, SETUP_TIMEOUT_MS);
@@ -263,22 +325,33 @@ if (PG_URL === undefined || REDIS_URL === undefined) {
   describe("flushing Redis costs latency, never data", () => {
     it("answers the same recall from Postgres after a FLUSHALL", async () => {
       const idA = await seed(CONTENT_A, ["pool"]);
+      const idB = await seed(CONTENT_B, ["pgvector"]);
       const before = await recall(ask(), deps);
-      expect(ids(before.results)).toContain(idA);
+      expect(ids(before.results)).toEqual(expect.arrayContaining([idA, idB]));
 
       await raw.flushAll();
 
       const after = await recall(ask(), deps);
-      expect(ids(after.results)).toEqual(ids(before.results));
+      // Sorted: the file asserts membership, never order. Semantic order over the
+      // fake's vectors is arbitrary, and HNSW's is only approximately sorted.
+      expect([...ids(after.results)].sort()).toEqual([...ids(before.results)].sort());
       // The counter went with the entries it scopes. Losing it costs a cache
       // generation and nothing else — which is only true because they share a
       // lifetime (DD-044, architecture § Cache layer).
       await expect(cache.getCorpusVersion()).resolves.toBe(0);
     });
 
-    it("does not resurrect a forgotten memory when the counter resets", async () => {
+    /**
+     * A cold-path regression guard, not a measurement: `FLUSHALL` takes the entries
+     * *and* the counter, so nothing survives to be resurrected and no plausible
+     * mutation of the cache makes this fail. The hazard DD-044 and DD-048 actually
+     * name is **asymmetric** loss — the counter evicted while entries live — and
+     * that one is closed by Redis configuration (`noeviction`), not by any code this
+     * suite can exercise.
+     */
+    it("still excludes a forgotten memory on the cold path after a FLUSHALL", async () => {
       const idA = await seed(CONTENT_A, ["pool"]);
-      await seed(CONTENT_B, ["pgvector"]);
+      const idB = await seed(CONTENT_B, ["pgvector"]);
       await recall(ask(), deps);
       await forget({ id: idA }, deps);
 
@@ -286,6 +359,7 @@ if (PG_URL === undefined || REDIS_URL === undefined) {
 
       const after = await recall(ask(), deps);
       expect(ids(after.results)).not.toContain(idA);
+      expect(ids(after.results)).toContain(idB);
     });
   });
 }
