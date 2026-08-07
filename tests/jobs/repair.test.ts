@@ -9,6 +9,7 @@ import { isStrataError } from "../../src/errors.js";
 import { repairPass } from "../../src/jobs/repair.js";
 import { remember } from "../../src/tools/remember.js";
 import { createFakeDeps } from "../fakes/fakeDeps.js";
+import { until } from "../support/until.js";
 
 /**
  * A failed row is not claimable again until `base · 2^attempts` of wall clock has
@@ -288,5 +289,66 @@ describe("the repair pass cannot be starved by a poison row (DD-041)", () => {
     expect(report.enhanced).toBe(1);
     expect(deps.store.rows.find((row) => row.id === "healthy")?.status).toBe("compressed");
     expect(deps.store.rows.find((row) => row.id === "poison")?.status).toBe("raw");
+  });
+});
+
+describe("the repair pass yields to shutdown (DD-045)", () => {
+  /** Rows left raw by an outage, all waiting in the backlog. */
+  async function backlogOf(count: number): Promise<ReturnType<typeof createFakeDeps>> {
+    const deps = createFakeDeps({ ollama: { generate: "unavailable" } });
+    for (let i = 0; i < count; i += 1) {
+      await remember({ content: `memory number ${String(i)}` }, deps);
+    }
+    skipBackoff();
+    deps.ollama.setGenerateMode("ok");
+    return deps;
+  }
+
+  it("examines nothing when the signal is already aborted", async () => {
+    vi.useFakeTimers();
+    const deps = await backlogOf(3);
+    const controller = new AbortController();
+    controller.abort();
+
+    const before = deps.store.calls.length;
+    const report = await repairPass(deps, 10, controller.signal);
+
+    expect(report.examined).toBe(0);
+    // Charging a row never shown to the model would spend its cap on our shutdown.
+    expect(deps.store.calls.slice(before)).not.toContain("recordEnhancementAttempt");
+  });
+
+  /* The point is the *connection*: a pass that runs its whole batch holds the advisory
+     lock's pooled client through that many CPU-bound model calls, and pool.end() waits
+     behind it until the shutdown floor kills the process. */
+  it("stops between rows once the signal aborts mid-pass", async () => {
+    vi.useFakeTimers();
+    const deps = await backlogOf(4);
+    const controller = new AbortController();
+
+    // Blocked on the first row's write, so the abort lands provably mid-pass rather
+    // than on a timing guess.
+    const release = deps.store.block("applyEnhancement");
+    const pass = repairPass(deps, 10, controller.signal);
+    await until(
+      () => deps.store.calls.includes("applyEnhancement"),
+      "the first row reached its write",
+    );
+
+    controller.abort();
+    release();
+    const report = await pass;
+
+    expect(report.examined).toBe(1);
+    expect(report.enhanced).toBe(1);
+  });
+
+  it("runs the whole backlog when nothing aborts", async () => {
+    vi.useFakeTimers();
+    const deps = await backlogOf(4);
+
+    const report = await repairPass(deps, 10, new AbortController().signal);
+
+    expect(report.examined).toBe(4);
   });
 });

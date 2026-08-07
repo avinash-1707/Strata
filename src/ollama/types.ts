@@ -17,6 +17,15 @@ export interface Ollama {
  */
 export interface ModelCallOptions {
   readonly timeoutMs?: number;
+
+  /**
+   * Cancels the call before its timeout. Distinct from `timeoutMs` because the two
+   * answer different questions: the timeout bounds how long *this* call may take,
+   * while the signal says the process no longer wants the answer. Shutdown needs the
+   * second — a 60 s generation holds the repair pass's pooled connection, and
+   * `pool.end()` cannot finish behind it (DD-045).
+   */
+  readonly signal?: AbortSignal;
 }
 
 /**

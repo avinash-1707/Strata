@@ -198,3 +198,49 @@ describe("ollama client: failure split (unreachable vs unusable)", () => {
     });
   });
 });
+
+describe("the ollama client: caller cancellation", () => {
+  /** Never answers, so only an abort can end the call. */
+  function hangingFetch(): { fetchFn: typeof fetch; seen: (AbortSignal | undefined)[] } {
+    const seen: (AbortSignal | undefined)[] = [];
+    const fetchFn: typeof fetch = (_input, init) => {
+      const signal = init?.signal ?? undefined;
+      seen.push(signal);
+      return new Promise<Response>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => {
+          reject(new DOMException("aborted", "AbortError"));
+        });
+      });
+    };
+    return { fetchFn, seen };
+  }
+
+  /* The whole shutdown chain is decorative unless the signal reaches fetch: a pass
+     holding a pooled connection through a 60s generation is what blocks pool.end()
+     (DD-045). */
+  it.each([
+    ["generate", (fetchFn: typeof fetch, signal: AbortSignal) =>
+      createOllamaClient(config(), fetchFn).generate("prompt", { signal })],
+    ["embed", (fetchFn: typeof fetch, signal: AbortSignal) =>
+      createOllamaClient(config(), fetchFn).embed("text", "document", { signal })],
+  ])("lets a caller's signal cancel %s", async (_label, call) => {
+    const { fetchFn } = hangingFetch();
+    const controller = new AbortController();
+    const inFlight = call(fetchFn, controller.signal);
+
+    controller.abort();
+
+    // OLLAMA_UNAVAILABLE, not a new code: DD-045 classifies that as transport, so the
+    // row is stamped and charged nothing — right for a call the process cancelled.
+    await expect(inFlight).rejects.toMatchObject({ code: "OLLAMA_UNAVAILABLE" });
+  });
+
+  it("still enforces its own timeout when no caller signal is given", async () => {
+    const { fetchFn, seen } = hangingFetch();
+
+    await expect(
+      createOllamaClient(config(), fetchFn).generate("prompt", { timeoutMs: 10 }),
+    ).rejects.toMatchObject({ code: "OLLAMA_UNAVAILABLE" });
+    expect(seen[0]).toBeInstanceOf(AbortSignal);
+  });
+});

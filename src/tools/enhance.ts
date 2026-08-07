@@ -70,6 +70,11 @@ export async function enhanceMemory(
   record: MemoryRecord,
   deps: ToolDeps,
   budgetMs: number = ENHANCEMENT_TIMEOUT_MS,
+  /* Cancels the model calls on shutdown. An aborted call surfaces as
+     OLLAMA_UNAVAILABLE, which already classifies as transport — so the row is stamped
+     and uncharged, which is exactly right: a call the process cancelled says nothing
+     about the content (DD-045). */
+  signal?: AbortSignal,
 ): Promise<EnhancementResult> {
   // One deadline for the whole stage: two calls each given the full budget would
   // hold the caller for twice the bound this exists to impose.
@@ -94,7 +99,7 @@ export async function enhanceMemory(
       return await charge(record, "content", deps);
     }
 
-    const compressed = await compress(content, deps, remaining(deadline));
+    const compressed = await compress(content, deps, remaining(deadline), signal);
     if (!compressed.ok) {
       return await charge(record, compressed.kind, deps);
     }
@@ -103,7 +108,7 @@ export async function enhanceMemory(
     tags = normalizeTags(record.tags, compressed.value.suggested_tags);
   }
 
-  const embedded = await embed(summary, deps, remaining(deadline));
+  const embedded = await embed(summary, deps, remaining(deadline), signal);
 
   // applyEnhancement sets status='compressed', so calling it with only a new
   // embedding would mark an uncompressed row compressed.
@@ -178,6 +183,7 @@ async function compress(
   content: string,
   deps: ToolDeps,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<Attempted<{ summary: string; suggested_tags: string[] }>> {
   if (timeoutMs <= 0) {
     // Transport, not content: the budget ran out before this row was ever shown to
@@ -191,6 +197,7 @@ async function compress(
       format: compressionJsonSchema(),
       temperature: COMPRESSION_TEMPERATURE,
       timeoutMs,
+      ...(signal === undefined ? {} : { signal }),
     });
     return { ok: true, value: parseCompressionResult(raw) };
   } catch (error: unknown) {
@@ -207,6 +214,7 @@ async function embed(
   summary: string,
   deps: ToolDeps,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<Attempted<{ vector: readonly number[]; model: string }>> {
   if (timeoutMs <= 0) {
     deps.log.warn({ stage: "embed" }, "enhancement budget exhausted, leaving row unembedded");
@@ -214,7 +222,10 @@ async function embed(
   }
 
   try {
-    const result = await deps.ollama.embed(summary, "document", { timeoutMs });
+    const result = await deps.ollama.embed(summary, "document", {
+      timeoutMs,
+      ...(signal === undefined ? {} : { signal }),
+    });
     // Re-checked at the last point before persistence: pgvector's own rejection
     // would arrive as an opaque insert failure rather than a named degradation.
     assertEmbeddingDimensions(result.vector, result.model);

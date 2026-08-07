@@ -1,6 +1,6 @@
 import { createRedisCache } from "./cache/redis.js";
 import type { Cache } from "./cache/types.js";
-import { REPAIR_INTERVAL_MS } from "./config/budgets.js";
+import { REPAIR_BATCH_SIZE, REPAIR_INTERVAL_MS } from "./config/budgets.js";
 import { loadConfig } from "./config/env.js";
 import { createDb } from "./db/client.js";
 import { withRepairLock } from "./db/locks.js";
@@ -35,6 +35,14 @@ process.on("unhandledRejection", (reason) => {
 
 let db: Db | undefined;
 let cache: Cache | undefined;
+
+/**
+ * Cancels model calls the process no longer wants an answer to. Declared out here
+ * because the boot-failure path needs it too: `repairPass` fires before the transport
+ * binds, so an EADDRINUSE can land with a pass already holding a pooled connection
+ * through a 60 s generation — and `pool.end()` waits behind it.
+ */
+const stopping = new AbortController();
 
 /** Failure-isolated: one close() rejecting must not skip the others (both are
  *  idempotent, so the boot-failure path and onShutdown may each call this). */
@@ -79,6 +87,10 @@ try {
   // interval keeps draining what stage 2 degrades from here on.
   let repairing = false;
   const runRepair = (): void => {
+    if (stopping.signal.aborted) {
+      // Taking the advisory lock during teardown is the thing this exists to avoid.
+      return;
+    }
     if (repairing) {
       // A slow pass must not stack a second one behind it: repair calls a
       // CPU-bound model, and overlapping passes would retry the same rows.
@@ -92,7 +104,9 @@ try {
              normally only one, but a stdio session or a second deployment against the
              same database would each run their own pass over one backlog, double-
              counting enhancement_attempts against a cap of 5 (DD-045). */
-          const report = await withRepairLock(database, log, () => repairPass(deps));
+          const report = await withRepairLock(database, log, () =>
+            repairPass(deps, REPAIR_BATCH_SIZE, stopping.signal),
+          );
           if (report === undefined) {
             log.debug({}, "another process is repairing; skipping this pass");
           } else if (report.examined > 0) {
@@ -117,6 +131,9 @@ try {
   // The transport arms the shutdown floor around this: it owns the other half of
   // teardown, and the floor has to cover both.
   const onShutdown = async (): Promise<void> => {
+    // First, before anything that waits: a pass in flight releases its connection and
+    // the advisory lock as soon as the cancelled model call unwinds.
+    stopping.abort();
     clearInterval(repairTimer);
     await releaseResources();
   };
@@ -138,6 +155,7 @@ try {
 } catch (error) {
   // Boot failures are loud and structured: stderr, never stdout (DD-026).
   log.error({ error: describeUnknown(error) }, "strata failed to start");
+  stopping.abort();
   /* Under the floor for the same reason the transport's teardown is: the boot pass of
      repairPass has already started by the time a bind can fail, so `pool.end()` waits
      behind a CPU-bound model call — and `up -d --wait` waits on that. */

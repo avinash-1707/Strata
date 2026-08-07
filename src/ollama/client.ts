@@ -46,15 +46,24 @@ const generateResponseSchema = z.object({
 });
 
 export function createOllamaClient(config: Config, fetchFn: typeof fetch = fetch): Ollama {
-  async function post(path: string, body: Record<string, unknown>, timeoutMs: number): Promise<unknown> {
+  async function post(
+    path: string,
+    body: Record<string, unknown>,
+    timeoutMs: number,
+    caller?: AbortSignal,
+  ): Promise<unknown> {
+    // A stuck CPU-bound generation must never hang a tool call (DD-028); a caller's
+    // signal cancels it earlier still, which is how shutdown gets its connection back.
+    const deadline = AbortSignal.timeout(timeoutMs);
+    const signal = caller === undefined ? deadline : AbortSignal.any([deadline, caller]);
+
     let response: Response;
     try {
       response = await fetchFn(new URL(path, config.OLLAMA_URL), {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
-        // A stuck CPU-bound generation must never hang a tool call (DD-028).
-        signal: AbortSignal.timeout(timeoutMs),
+        signal,
       });
     } catch (cause) {
       throw wrapError("OLLAMA_UNAVAILABLE", "ollama is unreachable", cause, {
@@ -93,6 +102,7 @@ export function createOllamaClient(config: Config, fetchFn: typeof fetch = fetch
         "/api/embed",
         { model, input: prefixed },
         options?.timeoutMs ?? config.OLLAMA_TIMEOUT_MS,
+        options?.signal,
       );
 
       const parsed = embedResponseSchema.safeParse(payload);
@@ -126,6 +136,7 @@ export function createOllamaClient(config: Config, fetchFn: typeof fetch = fetch
           options: { temperature: options?.temperature ?? 0 },
         },
         options?.timeoutMs ?? config.OLLAMA_TIMEOUT_MS,
+        options?.signal,
       );
 
       const parsed = generateResponseSchema.safeParse(payload);
