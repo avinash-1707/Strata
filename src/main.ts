@@ -1,6 +1,6 @@
 import { createRedisCache } from "./cache/redis.js";
 import type { Cache } from "./cache/types.js";
-import { REPAIR_INTERVAL_MS, SHUTDOWN_FLOOR_MS } from "./config/budgets.js";
+import { REPAIR_INTERVAL_MS } from "./config/budgets.js";
 import { loadConfig } from "./config/env.js";
 import { createDb } from "./db/client.js";
 import { withRepairLock } from "./db/locks.js";
@@ -15,6 +15,7 @@ import { repairPass } from "./jobs/repair.js";
 import { createLogger, isLogLevel } from "./logger.js";
 import { createMcpHttpHandler } from "./mcp/http.js";
 import { serveStdio } from "./mcp/stdio.js";
+import { withShutdownFloor } from "./shutdown.js";
 import { createOllamaClient } from "./ollama/client.js";
 import { createPgStore } from "./store/pg/index.js";
 
@@ -113,13 +114,9 @@ try {
   // The transport decides the process lifetime, never the repair schedule.
   repairTimer.unref();
 
+  // The transport arms the shutdown floor around this: it owns the other half of
+  // teardown, and the floor has to cover both.
   const onShutdown = async (): Promise<void> => {
-    // unref'd: only a floor under a hung close, never a reason to stay alive.
-    setTimeout(() => {
-      log.error({}, "shutdown exceeded its floor; exiting");
-      process.exit(1);
-    }, SHUTDOWN_FLOOR_MS).unref();
-
     clearInterval(repairTimer);
     await releaseResources();
   };
@@ -141,6 +138,9 @@ try {
 } catch (error) {
   // Boot failures are loud and structured: stderr, never stdout (DD-026).
   log.error({ error: describeUnknown(error) }, "strata failed to start");
-  await releaseResources();
+  /* Under the floor for the same reason the transport's teardown is: the boot pass of
+     repairPass has already started by the time a bind can fail, so `pool.end()` waits
+     behind a CPU-bound model call — and `up -d --wait` waits on that. */
+  await withShutdownFloor(log, releaseResources);
   process.exitCode = 1;
 }

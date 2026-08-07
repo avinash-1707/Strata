@@ -1,7 +1,7 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 import type { ToolDeps } from "../deps.js";
-import { installShutdownHandlers, once, runTeardown } from "../shutdown.js";
+import { installShutdownHandlers, once, runTeardown, withShutdownFloor } from "../shutdown.js";
 import type { ToolRegistrar } from "./server.js";
 import { createStrataServer, SERVER_NAME, SERVER_VERSION } from "./server.js";
 
@@ -38,12 +38,16 @@ export async function serveStdio(deps: ToolDeps, options: ServeStdioOptions = {}
   // client fails to parse the stream and reports it as its own bug.
   deps.log.info({ name: SERVER_NAME, version: SERVER_VERSION }, "listening on stdio");
 
-  const teardown = once(async () => {
-    await server.close();
-    if (options.onShutdown !== undefined) {
-      await options.onShutdown();
-    }
-  });
+  // The floor covers `server.close()` as well as the caller's release, because both
+  // can hang and neither has another bound.
+  const teardown = once(() =>
+    withShutdownFloor(deps.log, async () => {
+      await server.close();
+      if (options.onShutdown !== undefined) {
+        await options.onShutdown();
+      }
+    }),
+  );
 
   /* StdioServerTransport subscribes to stdin's 'data' and 'error' only — never 'end'.
      So a client that closes the stream instead of signalling leaves the transport

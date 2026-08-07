@@ -5,7 +5,7 @@ import type { Hono } from "hono";
 import { CONNECTION_DRAIN_MS } from "../config/budgets.js";
 import { describeUnknown } from "../errors.js";
 import type { Logger } from "../logger.js";
-import { installShutdownHandlers, once, runTeardown } from "../shutdown.js";
+import { installShutdownHandlers, once, runTeardown, withShutdownFloor } from "../shutdown.js";
 
 export interface ServeHttpOptions {
   readonly host: string;
@@ -52,12 +52,16 @@ export async function serveHttp(app: Hono, options: ServeHttpOptions): Promise<v
     server.on("close", resolve);
   });
 
-  const teardown = once(async () => {
-    await stopListening(server, log);
-    if (options.onShutdown !== undefined) {
-      await options.onShutdown();
-    }
-  });
+  /* The floor wraps both steps, not just the caller's. `close()` not firing its
+     callback would otherwise hang the process with no timer left to exit it. */
+  const teardown = once(() =>
+    withShutdownFloor(log, async () => {
+      await stopListening(server, log);
+      if (options.onShutdown !== undefined) {
+        await options.onShutdown();
+      }
+    }),
+  );
 
   installShutdownHandlers(log, teardown);
 
@@ -74,6 +78,9 @@ async function stopListening(server: ServerType, log: Logger): Promise<void> {
       if ("closeAllConnections" in server) {
         log.warn({ drainMs: CONNECTION_DRAIN_MS }, "forcing open connections closed");
         server.closeAllConnections();
+      } else {
+        // Nothing else bounds the drain, so a silent no-op here is a hang.
+        log.error({}, "this server cannot force connections closed; shutdown may hang");
       }
     }, CONNECTION_DRAIN_MS);
     forced.unref();
