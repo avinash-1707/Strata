@@ -1,8 +1,7 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
-import { describeUnknown } from "../errors.js";
-import type { Logger } from "../logger.js";
 import type { ToolDeps } from "../deps.js";
+import { installShutdownHandlers, once, runTeardown } from "../shutdown.js";
 import type { ToolRegistrar } from "./server.js";
 import { createStrataServer, SERVER_NAME, SERVER_VERSION } from "./server.js";
 
@@ -55,46 +54,12 @@ export async function serveStdio(deps: ToolDeps, options: ServeStdioOptions = {}
     void runTeardown(deps.log, teardown);
   });
 
-  // A signal from the client killing the subprocess runs the same teardown.
+  /* A timer to hold the event loop open across teardown was tried and removed: with
+     it gone, all three teardown paths still complete and exit 0, so it was doing no
+     work. */
   installShutdownHandlers(deps.log, teardown);
 
   await closed;
   await runTeardown(deps.log, teardown);
   deps.log.info({}, "client disconnected");
-}
-
-/**
- * SIGINT/SIGTERM arrive when the client kills the subprocess — this is how Claude
- * Code stops the server.
- *
- * A timer to hold the event loop open across teardown was tried and removed: with it
- * gone, all three teardown paths still complete and exit 0, so it was doing no work.
- * Phase 4 should re-check once a pg Pool is behind `onShutdown`, since that is the
- * case where a slow close could in principle race the loop draining.
- */
-function installShutdownHandlers(log: Logger, teardown: () => Promise<void>): void {
-  for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    process.once(signal, () => {
-      log.info({ signal }, "shutting down");
-      void runTeardown(log, teardown);
-    });
-  }
-}
-
-async function runTeardown(log: Logger, teardown: () => Promise<void>): Promise<void> {
-  try {
-    await teardown();
-  } catch (error: unknown) {
-    // Nothing left to return an error to; the client is already gone.
-    log.error({ error: describeUnknown(error) }, "shutdown failed");
-  }
-}
-
-/** Teardown is reachable from two paths and must not run twice. */
-function once(work: () => Promise<void>): () => Promise<void> {
-  let started: Promise<void> | undefined;
-  return () => {
-    started ??= work();
-    return started;
-  };
 }
