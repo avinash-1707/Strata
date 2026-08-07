@@ -3,6 +3,21 @@ import type { MemoryRecord } from "../types.js";
 import type { MemoryRow } from "./memories.js";
 import { MEMORY_COLUMNS, toMemoryRecord } from "./memories.js";
 
+/**
+ * Exported so the plan test can `explain` the statement production actually runs.
+ * Duplicating the SQL in the test would let the two drift, and the drifting one is
+ * the test — it would keep proving the GIN index is used by a query nobody issues.
+ */
+export function tagSearchSql(match: "any" | "all"): string {
+  // Both are GIN-supported (DD-018): `&&` is OR over the tags, `@>` is AND.
+  const operator = match === "all" ? "@>" : "&&";
+  return `select ${MEMORY_COLUMNS}
+     from live_memories
+     where tags ${operator} $1::text[]
+     order by created_at desc, id
+     limit $2`;
+}
+
 export async function searchByTag(
   db: Queryable,
   tags: readonly string[],
@@ -15,14 +30,6 @@ export async function searchByTag(
   if (tags.length === 0) {
     return [];
   }
-  const operator = match === "all" ? "@>" : "&&";
-  const rows = await db.query<MemoryRow>(
-    `select ${MEMORY_COLUMNS}
-     from live_memories
-     where tags ${operator} $1::text[]
-     order by created_at desc, id
-     limit $2`,
-    [[...tags], limit],
-  );
+  const rows = await db.query<MemoryRow>(tagSearchSql(match), [[...tags], limit]);
   return rows.map(toMemoryRecord);
 }
