@@ -57,9 +57,17 @@ export const sessionIdSchema = plainText(200, "session_id").min(1);
 export const memoryStatusSchema = z.enum(["raw", "compressed"]);
 export type MemoryStatus = z.infer<typeof memoryStatusSchema>;
 
-/** A stored memory as any read path returns it. */
+/**
+ * A stored memory as any read path returns it.
+ *
+ * Every field carries a `.describe()` because the wire JSON Schema is the whole of
+ * what an agent knows about this contract (DD-018). A comment here is invisible to
+ * the caller, which is the gap the descriptions close.
+ */
 export const memorySummaryShape = {
-  id: memoryIdSchema,
-  summary: z.string(),
-  tags: z.array(z.string()),
+  id: memoryIdSchema.describe("This memory's id. Pass it to forget to remove it."),
+  summary: z
+    .string()
+    .describe("The stored memory, compressed. This is the text that was searched."),
+  tags: z.array(z.string()).describe("The tags stored on this memory."),
 } as const;

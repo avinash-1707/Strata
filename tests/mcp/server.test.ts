@@ -86,6 +86,33 @@ describe("a real MCP client against the server", () => {
     }
   });
 
+  /* The tool description says when to call it; the field descriptions say what to
+     put in it, and are the only thing an agent has — a comment in the contract file
+     is invisible on the wire. A missing one is filled in by guessing (DD-018). */
+  it("describes every input field of every shipped tool, on the wire", async () => {
+    const { tools } = await harness.client.listTools();
+    const undescribed: string[] = [];
+
+    for (const tool of tools) {
+      if (tool.name === PROBE_TOOL_NAME) {
+        continue;
+      }
+      const properties = tool.inputSchema.properties ?? {};
+      for (const [field, schema] of Object.entries(properties)) {
+        const { description } = schema as { description?: unknown };
+        if (typeof description !== "string" || description.trim() === "") {
+          undescribed.push(`${tool.name}.${field}`);
+        }
+      }
+      // An empty `properties` would pass the loop above without describing anything.
+      expect(Object.keys(properties).length, `${tool.name} exposes no input fields`).toBeGreaterThan(
+        0,
+      );
+    }
+
+    expect(undescribed).toEqual([]);
+  });
+
   it("derives the wire JSON Schema from the Zod schema", async () => {
     const { tools } = await harness.client.listTools();
     const schema = tools.find((tool) => tool.name === PROBE_TOOL_NAME)?.inputSchema;
