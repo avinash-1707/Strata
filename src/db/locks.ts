@@ -12,11 +12,14 @@ const REPAIR_LOCK_ID = 0x53_54_52_52;
  * Runs `fn` only if no other process is already running it, and returns `undefined`
  * if one is (DD-045).
  *
- * stdio MCP means one server process *per client*, so N open sessions used to run N
- * repair passes over the same backlog — duplicating CPU-bound model work and
- * charging several attempts per row against a cap of five. `try`, not the blocking
- * form: a process that arrives during someone else's pass should skip its turn, not
- * queue behind minutes of generation and then repeat it.
+ * The HTTP daemon is one process, so the common case is now a redeploy overlapping the
+ * outgoing container, or a second deployment against the same database; under the
+ * retained stdio transport it is one process per client, where N sessions ran N passes
+ * over the same backlog. Either way the cost is the same: duplicated CPU-bound model
+ * work, and several attempts charged per row against a cap of five.
+ *
+ * `try`, not the blocking form: a process that arrives during someone else's pass
+ * should skip its turn, not queue behind minutes of generation and then repeat it.
  */
 export async function withRepairLock<T>(
   db: Db,

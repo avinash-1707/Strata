@@ -65,10 +65,11 @@ export function planMigrations(
 }
 
 /**
- * Serializes concurrent boots. stdio MCP means one server process *per client*,
- * so two instances migrating the same empty database in the same second is the
- * normal case, not the exotic one — without the lock, the loser dies on a DDL
- * conflict and that client's memory tools are dead until a manual restart.
+ * Serializes concurrent boots. Under the HTTP daemon that means a redeploy overlapping
+ * the outgoing process, or a second deployment against the same database; under the
+ * retained stdio transport it means one process per client, where two instances
+ * migrating the same empty database in the same second is routine. Without the lock,
+ * the loser dies on a DDL conflict and boots no further.
  * Arbitrary but stable; must never be reused for another Strata lock.
  */
 const MIGRATION_LOCK_ID = 0x53_54_52_41; // "STRA"

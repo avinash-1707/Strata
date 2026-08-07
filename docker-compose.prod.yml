@@ -148,11 +148,24 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
-    # Both sides from the same variable, so a published port cannot drift from the
-    # port the app actually binds. LAN-visible by design: the agent is on another
-    # host, and MCP_AUTH_TOKEN is what stands in front of it (DD-036).
+    # Bound to loopback unless BIND_ADDR names an interface, and that default is not
+    # timidity. Docker's own iptables chain is evaluated *before* the INPUT chain ufw
+    # writes to, so `ufw deny 8080` does not close a published port — an operator can
+    # believe the box is shut and be wrong. And there is no TLS here: the bearer token
+    # crosses the wire in cleartext on every call, so anything that can see the segment
+    # gets both a credential with no expiry and the memory content it protects.
+    # Point BIND_ADDR at a tailnet or WireGuard address; the overlay supplies the
+    # encryption, and the token becomes defence in depth instead of the whole defence.
+    #
+    # Both port sides come from the same variable, so a published port cannot drift
+    # from the port the app actually binds.
     ports:
-      - "${HTTP_PORT:-8080}:${HTTP_PORT:-8080}"
+      - "${BIND_ADDR:-127.0.0.1}:${HTTP_PORT:-8080}:${HTTP_PORT:-8080}"
+    # The drain (CONNECTION_DRAIN_MS) then the floor (SHUTDOWN_FLOOR_MS) are sequential
+    # — 7s worst case. Pinned rather than left to Docker's 10s default, because that
+    # default is what src/config/budgets.ts reasons against, and a `docker stop -t 5`
+    # or a systemd wrapper would silently invalidate it and SIGKILL mid-`pool.end()`.
+    stop_grace_period: 15s
     healthcheck:
       # `node -e`, not wget: node is the one binary this image is guaranteed to have,
       # and reading the token from the process environment keeps it off a command line
@@ -177,10 +190,14 @@ services:
     # a hand-written POSTGRES_URL in the same file would silently drift from it.
     environment:
       POSTGRES_URL: postgres://strata:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/strata
-      # The one place LAN exposure is declared. src/config/env.ts defaults to
-      # loopback, which inside a container means the published port reaches nothing;
-      # widening it here keeps the decision next to the `ports` mapping that enacts it.
+      # Loopback *inside the container* would make the published port reach nothing.
+      # The host-side exposure is the `ports` line above, which is where the decision
+      # actually lives.
       HTTP_HOST: 0.0.0.0
+      # Pinned, not left to .env: a stray STRATA_TRANSPORT=stdio here yields a detached
+      # container whose stdin is closed at start, which is a clean teardown, exit 0,
+      # `restart: unless-stopped`, and a crash loop that logs "listening on stdio".
+      STRATA_TRANSPORT: http
     depends_on:
       postgres:
         condition: service_healthy

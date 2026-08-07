@@ -22,8 +22,9 @@ export interface ServeStdioOptions {
  * Serves the MCP server over stdio and resolves once the client is gone and teardown
  * has finished.
  *
- * DD-026: a *local* transport, used on the Mac as a protocol test. The real
- * deployment is cross-host and its transport is Phase 12's decision.
+ * A *local* transport, selected by `STRATA_TRANSPORT=stdio`. The deployment transport
+ * is the HTTP daemon (DD-036, DD-053): stdio is spawned per client session, so it can
+ * neither share a process with a listener nor host a single repair schedule.
  */
 export async function serveStdio(deps: ToolDeps, options: ServeStdioOptions = {}): Promise<void> {
   const server = createStrataServer(deps, options.extraTools ?? []);

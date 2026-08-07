@@ -243,3 +243,27 @@ describe("mcp over http: authentication", () => {
     expect(response.status).toBe(200);
   });
 });
+
+describe("mcp over http: path matching", () => {
+  /* A trailing slash is one of the commonest ways a client's configured URL differs
+     from the documented one. Under Hono's default strict matching it would miss both
+     the auth middleware and the route, and answer an unauthenticated REST 404. */
+  it("serves /mcp/ the same as /mcp", async () => {
+    const { app } = build();
+    const response = await app.request(`${MCP_PATH}/`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: MCP_ACCEPT },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/list" }),
+    });
+
+    expect(response.status).toBe(200);
+  });
+
+  it("requires a token on /mcp/ too", async () => {
+    const deps = createFakeDeps({ config: { MCP_AUTH_TOKEN: TOKEN } });
+    const app = createHttpApp(deps, { mcp: createMcpHttpHandler(deps) });
+    const response = await app.request(`${MCP_PATH}/`, { method: "POST" });
+
+    expect(response.status).toBe(401);
+  });
+});

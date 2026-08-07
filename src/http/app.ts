@@ -40,7 +40,11 @@ export interface HttpAppOptions {
  * `app.request()` and never bind a port.
  */
 export function createHttpApp(deps: ToolDeps, options: HttpAppOptions = {}): Hono {
-  const app = new Hono();
+  /* Hono's default is strict, under which `/mcp/` matches neither the auth middleware
+     nor the route — an MCP client configured with a trailing slash would get an
+     unauthenticated REST-shaped 404 and no log line naming the cause. `/v1/*` already
+     tolerated both forms, so this only closes the MCP path's gap. */
+  const app = new Hono({ strict: false });
 
   /* MCP_AUTH_TOKEN is optional in config because stdio has no HTTP surface to
      authenticate (DD-026). Serving HTTP without it would expose the whole corpus to
