@@ -84,6 +84,21 @@ if (PG_URL === undefined) {
       await expect(candidateIds()).resolves.not.toContain(id);
     });
 
+    /* The depth cap under the *shipped* policy, not an inverted one. Conformance can
+       only move `maxDepth`, because the seam has no way to write `compaction_depth` —
+       so this is the only place the production configuration is exercised against a
+       row that has already been merged once (DD-012). */
+    it("excludes an already-merged row under the shipped policy", async () => {
+      const merged = await aged("compaction-depth-1", "the output of an earlier merge", OLD_ENOUGH_DAYS);
+      const unmerged = await aged("compaction-depth-0", "never merged", OLD_ENOUGH_DAYS);
+      await db.query("update memories set compaction_depth = 1 where id = $1", [merged]);
+
+      const candidates = await candidateIds();
+
+      expect(candidates).not.toContain(merged);
+      expect(candidates).toContain(unmerged);
+    });
+
     it("returns the coldest first, so a truncated batch is the best candidates", async () => {
       const oldest = await aged("compaction-oldest", "the oldest note", OLD_ENOUGH_DAYS + 100);
       const newer = await aged("compaction-newer", "a less old note", OLD_ENOUGH_DAYS);
@@ -114,9 +129,11 @@ if (PG_URL === undefined) {
 
     it("keeps a much-recalled memory even when it is marked unimportant", async () => {
       const id = await aged("compaction-hot", "old, unimportant, and read constantly", OLD_ENOUGH_DAYS);
-      await db.query("update memories set importance = 1 where id = $1", [id]);
 
-      await store.touchUsage([id]);
+      /* `recall_count` is set directly rather than through `touchUsage`, which would
+         also stamp `last_recalled_at = now()` and make the row young — leaving the age
+         term, not the usage term, as the reason it was excluded. */
+      await db.query("update memories set importance = 1, recall_count = 5 where id = $1", [id]);
 
       await expect(candidateIds()).resolves.not.toContain(id);
     });

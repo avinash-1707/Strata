@@ -57,6 +57,9 @@ if (PG_URL === undefined) {
 
   afterAll(async () => {
     await truncateMemories(db);
+    // Statistics for 5 000 rows would otherwise outlive the rows, in a serialized run
+    // that shares one database with every other suite.
+    await db.query("analyze memories");
     await db.close();
   });
 

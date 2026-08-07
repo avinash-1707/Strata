@@ -601,6 +601,15 @@ export function describeMemoryStore(
     describe("findCompactionCandidates (DD-012)", () => {
       const ANY_AGE: CompactionPolicy = { minAgeDays: 0, maxDepth: COMPACTION_MAX_DEPTH };
       const UNREACHABLE_AGE: CompactionPolicy = { minAgeDays: 3_650, maxDepth: COMPACTION_MAX_DEPTH };
+      /* A floor in the *future*, so no row can ever be excluded for being too young.
+         `ANY_AGE` is not enough for the usage case: `touchUsage` stamps
+         `last_recalled_at` in the same millisecond the floor is taken, so under a
+         zero-day floor the age term excludes the row and the usage term is never
+         exercised at all. */
+      const NOTHING_IS_TOO_YOUNG: CompactionPolicy = {
+        minAgeDays: -1,
+        maxDepth: COMPACTION_MAX_DEPTH,
+      };
 
       async function candidateIds(policy: CompactionPolicy = ANY_AGE): Promise<string[]> {
         const found = await store.findCompactionCandidates(LIMIT, policy);
@@ -620,11 +629,12 @@ export function describeMemoryStore(
       it("drops a memory the moment it is recalled once", async () => {
         const row = await compressed();
         await tick();
-        await expect(candidateIds()).resolves.toContain(row.id);
+        await expect(candidateIds(NOTHING_IS_TOO_YOUNG)).resolves.toContain(row.id);
 
         await store.touchUsage([row.id]);
 
-        await expect(candidateIds()).resolves.not.toContain(row.id);
+        // Age cannot be the reason under this floor, so only `recall_count` can be.
+        await expect(candidateIds(NOTHING_IS_TOO_YOUNG)).resolves.not.toContain(row.id);
       });
 
       it("holds back a memory younger than the age floor", async () => {

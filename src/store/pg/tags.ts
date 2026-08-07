@@ -7,6 +7,10 @@ import { MEMORY_COLUMNS, toMemoryRecord } from "./memories.js";
  * Exported so the plan test can `explain` the statement production actually runs.
  * Duplicating the SQL in the test would let the two drift, and the drifting one is
  * the test — it would keep proving the GIN index is used by a query nobody issues.
+ *
+ * **Internal.** It carries no empty-tags guard: `tags @> '{}'` is true of every row,
+ * so anything but `searchByTag` and the plan test calling this reintroduces the
+ * matches-everything bug the guard below exists to prevent.
  */
 export function tagSearchSql(match: "any" | "all"): string {
   // Both are GIN-supported (DD-018): `&&` is OR over the tags, `@>` is AND.

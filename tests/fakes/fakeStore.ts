@@ -76,7 +76,11 @@ export interface FakeStoreOptions {
 /** Fixed epoch so seeded `createdAt` values are deterministic and ordered. */
 const SEED_EPOCH_MS = Date.UTC(2026, 0, 1);
 
-/** DD-012's age floor arrives in days; the fake works in milliseconds. */
+/**
+ * DD-012's age floor arrives in days; the fake works in milliseconds. Postgres'
+ * `interval '1 day'` is DST-aware and this is not, so the two agree only because the
+ * floor is coarse — a fractional `minAgeDays` would put them an hour apart twice a year.
+ */
 const MS_PER_DAY = 24 * 60 * 60 * 1_000;
 
 /**

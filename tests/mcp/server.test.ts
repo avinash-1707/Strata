@@ -33,6 +33,34 @@ async function connect(options: FakeDepsOptions = {}): Promise<Harness> {
   };
 }
 
+/**
+ * Walks a derived JSON Schema, appending the path of every field that carries no
+ * description. Returns how many fields it looked at, so a walk that silently visited
+ * nothing cannot pass for a clean result.
+ */
+function collectUndescribed(schema: unknown, path: string, into: string[]): number {
+  if (typeof schema !== "object" || schema === null) {
+    return 0;
+  }
+  const node = schema as {
+    properties?: Record<string, unknown>;
+    items?: unknown;
+    description?: unknown;
+  };
+
+  let checked = 0;
+  for (const [field, child] of Object.entries(node.properties ?? {})) {
+    checked += 1;
+    const description = (child as { description?: unknown }).description;
+    if (typeof description !== "string" || description.trim() === "") {
+      into.push(`${path}.${field}`);
+    }
+    checked += collectUndescribed(child, `${path}.${field}`, into);
+  }
+  // An array's element schema is where the interesting fields live.
+  return checked + collectUndescribed(node.items, `${path}[]`, into);
+}
+
 /** The SDK types content loosely; every assertion here needs the text back. */
 function textOf(result: CallToolResult): string {
   return result.content
@@ -87,30 +115,33 @@ describe("a real MCP client against the server", () => {
   });
 
   /* The tool description says when to call it; the field descriptions say what to
-     put in it, and are the only thing an agent has — a comment in the contract file
-     is invisible on the wire. A missing one is filled in by guessing (DD-018). */
-  it("describes every input field of every shipped tool, on the wire", async () => {
+     put in it and what came back, and are the only thing an agent has — a comment in
+     the contract file is invisible on the wire. A missing one is filled in by
+     guessing (DD-018).
+
+     Recursive, because `recall`'s and `search_by_tag`'s payloads are arrays of
+     objects: a top-level-only walk would report `results` as described and never look
+     at `score`, `similarity` or `created_at` inside it. */
+  it("describes every input and output field of every shipped tool, on the wire", async () => {
     const { tools } = await harness.client.listTools();
     const undescribed: string[] = [];
+    let checked = 0;
 
     for (const tool of tools) {
       if (tool.name === PROBE_TOOL_NAME) {
         continue;
       }
-      const properties = tool.inputSchema.properties ?? {};
-      for (const [field, schema] of Object.entries(properties)) {
-        const { description } = schema as { description?: unknown };
-        if (typeof description !== "string" || description.trim() === "") {
-          undescribed.push(`${tool.name}.${field}`);
-        }
+      for (const [side, schema] of [
+        ["input", tool.inputSchema],
+        ["output", tool.outputSchema],
+      ] as const) {
+        checked += collectUndescribed(schema, `${tool.name}.${side}`, undescribed);
       }
-      // An empty `properties` would pass the loop above without describing anything.
-      expect(Object.keys(properties).length, `${tool.name} exposes no input fields`).toBeGreaterThan(
-        0,
-      );
     }
 
     expect(undescribed).toEqual([]);
+    // A walk that visited nothing would satisfy the assertion above in silence.
+    expect(checked).toBeGreaterThan(0);
   });
 
   it("derives the wire JSON Schema from the Zod schema", async () => {

@@ -259,7 +259,15 @@ export async function findCompactionCandidates(
        look coldest here.
 
        Server-side `now()`, never an app timestamp: two processes with drifting
-       clocks would disagree about what is old. */
+       clocks would disagree about what is old.
+
+       SIMPLIFIED: no index serves this. `memories_live_idx` is `created_at desc`, and
+       the ordering expression is `greatest(...)`, so a run scans and sorts the live
+       rows — and unlike the repair backlog, the eligible set is most of the corpus in
+       steady state. Fine at DD-017's single-user scale, and it runs on a schedule with
+       nobody waiting. If the corpus grows, index
+       `(greatest(created_at, coalesce(last_recalled_at, created_at))) where
+       recall_count = 0 and superseded_by is null and deleted_at is null`. */
     `select ${MEMORY_COLUMNS} from live_memories
      where recall_count = 0
        and compaction_depth < $3

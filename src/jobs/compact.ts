@@ -15,6 +15,15 @@ import type { CompactionPolicy, MemoryRecord } from "../store/types.js";
  * Deliberately **not** gated on `COMPACTION_ENABLED`. The flag arms execution; a run
  * that writes nothing is how an operator decides whether to set it, so requiring the
  * flag to see the output would invert the review this exists for.
+ *
+ * **No production caller yet**, as `repairPass` had none for a phase: the operator
+ * entry point lands with Phase 11, alongside the grouping that makes the output worth
+ * reading. Until then this is reachable only from tests — which is also what
+ * `tests/jobs/compact.test.ts` guards, by asserting the store sees exactly one call.
+ *
+ * A run under the shipped `COMPACTION_POLICY` over a freshly-seeded corpus returns
+ * nothing, because every row is minutes old against a 30-day floor. That is correct
+ * and it looks like a broken dry run — hence the explicit `policy` argument.
  */
 
 /** A candidate as a reviewer needs to see it: enough to judge, nothing internal. */
