@@ -12,6 +12,19 @@ const DEFAULT_OLLAMA_TIMEOUT_MS = 60_000;
 /** 32 hex chars ≈ 128 bits, past guessable for a LAN-exposed endpoint (DD-026). */
 const MIN_AUTH_TOKEN_LENGTH = 32;
 
+/** Not a framework default (3000, 5173, 8000): those collide with whatever else the
+ *  operator is forwarding over the same SSH session. */
+const DEFAULT_HTTP_PORT = 8080;
+
+/* Every interface, because the daemon's whole purpose is to be reached from another
+   host (DD-026) and inside a container 127.0.0.1 is unreachable from the published
+   port. What keeps that safe is that HTTP cannot be served without MCP_AUTH_TOKEN
+   (DD-036); narrow the exposure with the compose port binding, not with a default
+   that makes the container silently unreachable. */
+const DEFAULT_HTTP_HOST = "0.0.0.0";
+
+const MAX_PORT = 65_535;
+
 const booleanFromEnv = z
   .enum(["true", "false", "1", "0"])
   .transform((value) => value === "true" || value === "1");
@@ -53,6 +66,16 @@ const envSchema = z.object({
       )
       .optional(),
   ),
+
+  /* The deployment transport is HTTP: one long-lived daemon serving REST and
+     MCP-over-HTTP, because stdio is spawned per client session and cannot share a
+     process with a listener (DD-036). `stdio` remains selectable for local
+     development against real Postgres and Redis, where there is no token to configure
+     and no port to bind. */
+  STRATA_TRANSPORT: z.enum(["http", "stdio"]).default("http"),
+
+  HTTP_HOST: z.string().min(1).default(DEFAULT_HTTP_HOST),
+  HTTP_PORT: z.coerce.number().int().min(1).max(MAX_PORT).default(DEFAULT_HTTP_PORT),
 
   // Compaction is destructive and LLM-driven, so it ships off (DD-012).
   COMPACTION_ENABLED: booleanFromEnv.default(false),

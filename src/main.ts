@@ -9,8 +9,11 @@ import type { Db } from "./db/types.js";
 import type { ToolDeps } from "./deps.js";
 import { createBackgroundRunner } from "./deps.js";
 import { describeUnknown } from "./errors.js";
+import { createHttpApp } from "./http/app.js";
+import { serveHttp } from "./http/serve.js";
 import { repairPass } from "./jobs/repair.js";
 import { createLogger, isLogLevel } from "./logger.js";
+import { createMcpHttpHandler } from "./mcp/http.js";
 import { serveStdio } from "./mcp/stdio.js";
 import { createOllamaClient } from "./ollama/client.js";
 import { createPgStore } from "./store/pg/index.js";
@@ -87,9 +90,10 @@ try {
     try {
       deps.background("repairPass", async () => {
         try {
-          /* The latch above only guards *this* process. stdio gives every client its
-             own process over one database, so the lock is what keeps N sessions from
-             running N passes over the same backlog (DD-045). */
+          /* The latch above only guards *this* process. Under the HTTP daemon there is
+             normally only one, but a stdio session or a second deployment against the
+             same database would each run their own pass over one backlog, double-
+             counting enhancement_attempts against a cap of 5 (DD-045). */
           const report = await withRepairLock(database, log, () => repairPass(deps));
           if (report === undefined) {
             log.debug({}, "another process is repairing; skipping this pass");
@@ -112,18 +116,31 @@ try {
   // The transport decides the process lifetime, never the repair schedule.
   repairTimer.unref();
 
-  await serveStdio(deps, {
-    onShutdown: async () => {
-      // unref'd: only a floor under a hung close, never a reason to stay alive.
-      setTimeout(() => {
-        log.error({}, "shutdown exceeded its floor; exiting");
-        process.exit(1);
-      }, SHUTDOWN_FLOOR_MS).unref();
+  const onShutdown = async (): Promise<void> => {
+    // unref'd: only a floor under a hung close, never a reason to stay alive.
+    setTimeout(() => {
+      log.error({}, "shutdown exceeded its floor; exiting");
+      process.exit(1);
+    }, SHUTDOWN_FLOOR_MS).unref();
 
-      clearInterval(repairTimer);
-      await releaseResources();
-    },
-  });
+    clearInterval(repairTimer);
+    await releaseResources();
+  };
+
+  if (config.STRATA_TRANSPORT === "stdio") {
+    await serveStdio(deps, { onShutdown });
+  } else {
+    /* One listener, both surfaces. The MCP handler is passed in rather than imported
+       by the app: `src/http` may not import `src/mcp` (DD-032), and this file is the
+       composition root that is allowed to name both (DD-036). */
+    const app = createHttpApp(deps, { mcp: createMcpHttpHandler(deps) });
+    await serveHttp(app, {
+      host: config.HTTP_HOST,
+      port: config.HTTP_PORT,
+      log,
+      onShutdown,
+    });
+  }
 } catch (error) {
   // Boot failures are loud and structured: stderr, never stdout (DD-026).
   log.error({ error: describeUnknown(error) }, "strata failed to start");

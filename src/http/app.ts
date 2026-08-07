@@ -14,9 +14,21 @@ import { registerRecallRoutes } from "./routes/recall.js";
  */
 export const API_PREFIX = "/v1";
 
+/** The ecosystem convention, and what an MCP client's configured URL ends in. */
+export const MCP_PATH = "/mcp";
+
 export interface HttpAppOptions {
   /** Skips auth. Only for tests that are not exercising auth itself. */
   readonly allowUnauthenticated?: boolean;
+
+  /**
+   * Mounted at `MCP_PATH` when present, so one listener serves both surfaces (DD-036).
+   *
+   * Injected rather than imported: `src/http` may not import `src/mcp` (DD-032), and
+   * a surface that reached into another surface is exactly the rot that seam exists
+   * to prevent. The composition root owns the wiring.
+   */
+  readonly mcp?: (request: Request) => Promise<Response>;
 }
 
 /**
@@ -42,7 +54,20 @@ export function createHttpApp(deps: ToolDeps, options: HttpAppOptions = {}): Hon
         "MCP_AUTH_TOKEN is required to serve the HTTP API",
       );
     }
-    app.use(`${API_PREFIX}/*`, bearerAuth(token));
+    const auth = bearerAuth(token);
+    app.use(`${API_PREFIX}/*`, auth);
+    // The MCP surface is not a second security domain: an unauthenticated agent must
+    // not reach the corpus by speaking JSON-RPC instead of REST.
+    app.use(MCP_PATH, auth);
+  }
+
+  /* Registered after the auth middleware because Hono runs handlers in registration
+     order: mounting this first would serve MCP without a token. */
+  const mcp = options.mcp;
+  if (mcp !== undefined) {
+    // `all`, not `post`: the handler answers non-POST itself with a 405 an MCP client
+    // can parse, rather than falling through to this app's REST-shaped 404.
+    app.all(MCP_PATH, (context) => mcp(context.req.raw));
   }
 
   /* Health stays on REST while the MCP tool is gone (DD-043): an operator, a

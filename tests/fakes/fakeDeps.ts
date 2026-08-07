@@ -50,6 +50,9 @@ const FAKE_CONFIG: Config = Object.freeze({
   EMBEDDING_MODEL: "nomic-embed-text",
   INSTRUCT_MODEL: "qwen2.5:3b-instruct",
   OLLAMA_TIMEOUT_MS: 60_000,
+  STRATA_TRANSPORT: "http",
+  HTTP_HOST: "127.0.0.1",
+  HTTP_PORT: 8080,
   COMPACTION_ENABLED: false,
 });
 

@@ -1,0 +1,88 @@
+import { serve } from "@hono/node-server";
+import type { ServerType } from "@hono/node-server";
+import type { Hono } from "hono";
+
+import type { Logger } from "../logger.js";
+import { installShutdownHandlers, once, runTeardown } from "../shutdown.js";
+
+/**
+ * How long an open connection gets to finish before it is severed.
+ *
+ * Node 19+ closes *idle* connections itself, so this is not about keep-alive: it is
+ * about a socket mid-request. `close()` waits for those forever, which for a daemon
+ * whose slowest handler calls a CPU-bound model means shutdown never completes and
+ * `main.ts`'s watchdog exits non-zero on every deploy. Must stay well under
+ * `SHUTDOWN_FLOOR_MS`, which also has a repair pass and two client closes to cover.
+ */
+const CONNECTION_DRAIN_MS = 2_000;
+
+export interface ServeHttpOptions {
+  readonly host: string;
+  readonly port: number;
+  readonly log: Logger;
+
+  /** Released after the listener has closed and before this resolves. */
+  readonly onShutdown?: () => Promise<void>;
+}
+
+/**
+ * Serves the app over HTTP and resolves only once the listener has closed and
+ * teardown has finished — so `await serveHttp(...)` is the process's lifetime.
+ *
+ * Unlike stdio, this is a long-lived daemon: it outlives any one client session, which
+ * is what makes a single REST listener, a single MCP endpoint, and one scheduled repair
+ * pass coherent in the same process (DD-036, DD-053).
+ */
+export async function serveHttp(app: Hono, options: ServeHttpOptions): Promise<void> {
+  const { log } = options;
+
+  const server = serve(
+    { fetch: app.fetch, hostname: options.host, port: options.port },
+    (info) => {
+      log.info({ host: info.address, port: info.port }, "listening on http");
+    },
+  );
+
+  /* Attached in the same tick as serve(): Node emits listen failures no earlier than
+     the next tick, and an 'error' with no listener is thrown, not reported. A bind
+     failure (EADDRINUSE, an unroutable host) must fail the boot loudly rather than
+     leave a process that answers nothing. */
+  const closed = new Promise<void>((resolve, reject) => {
+    server.on("error", reject);
+    server.on("close", resolve);
+  });
+
+  const teardown = once(async () => {
+    await stopListening(server, log);
+    if (options.onShutdown !== undefined) {
+      await options.onShutdown();
+    }
+  });
+
+  installShutdownHandlers(log, teardown);
+
+  await closed;
+  // `closed` resolves inside teardown, so this awaits the rest of that same run.
+  await runTeardown(log, teardown);
+}
+
+async function stopListening(server: ServerType, log: Logger): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const forced = setTimeout(() => {
+      // Narrowed rather than cast: ServerType includes HTTP/2 servers, which have no
+      // such method. Strata serves plain HTTP, so it is present at runtime.
+      if ("closeAllConnections" in server) {
+        log.warn({ drainMs: CONNECTION_DRAIN_MS }, "forcing open connections closed");
+        server.closeAllConnections();
+      }
+    }, CONNECTION_DRAIN_MS);
+    forced.unref();
+
+    // The callback's error argument is ignored deliberately: it only reports that the
+    // server was already closed, and this path is reached from an idempotent teardown.
+    server.close(() => {
+      clearTimeout(forced);
+      resolve();
+    });
+  });
+}
