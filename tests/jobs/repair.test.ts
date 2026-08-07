@@ -1,10 +1,27 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ENHANCEMENT_TIMEOUT_MS, MAX_ENHANCEMENT_ATTEMPTS } from "../../src/config/budgets.js";
+import {
+  ENHANCEMENT_RETRY_BASE_MS,
+  ENHANCEMENT_TIMEOUT_MS,
+  MAX_ENHANCEMENT_ATTEMPTS,
+} from "../../src/config/budgets.js";
 import { isStrataError } from "../../src/errors.js";
 import { repairPass } from "../../src/jobs/repair.js";
 import { remember } from "../../src/tools/remember.js";
 import { createFakeDeps } from "../fakes/fakeDeps.js";
+
+/**
+ * A failed row is not claimable again until `base · 2^attempts` of wall clock has
+ * passed (DD-045), so back-to-back passes see an empty backlog. Tests that need the
+ * *next* pass move the clock instead of sleeping through the real interval.
+ */
+function skipBackoff(): void {
+  vi.advanceTimersByTime(ENHANCEMENT_RETRY_BASE_MS * 2 ** MAX_ENHANCEMENT_ATTEMPTS);
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("the repair pass (DD-005 stage 3)", () => {
   it("upgrades a row left raw by an earlier outage", async () => {
@@ -22,10 +39,13 @@ describe("the repair pass (DD-005 stage 3)", () => {
   });
 
   it("embeds a row that was compressed but never embedded", async () => {
+    vi.useFakeTimers();
     const deps = createFakeDeps({ ollama: { embed: "wrongDimensions" } });
     const stored = await remember({ content: "a decision worth keeping" }, deps);
     expect(deps.store.rows[0]?.needsEmbedding).toBe(true);
 
+    // A wrong-width vector is a content failure, so the row is serving a backoff.
+    skipBackoff();
     deps.ollama.setEmbedMode("ok");
     const report = await repairPass(deps);
 
@@ -59,9 +79,11 @@ describe("the repair pass (DD-005 stage 3)", () => {
   });
 
   it("leaves a row raw and counts the attempt when the content defeats the model", async () => {
+    vi.useFakeTimers();
     const deps = createFakeDeps({ ollama: { generate: "wrongFields" } });
     const stored = await remember({ content: "a decision worth keeping" }, deps);
 
+    skipBackoff();
     const report = await repairPass(deps);
 
     expect(report).toMatchObject({ examined: 1, enhanced: 0, degraded: 1, aborted: false });
@@ -211,6 +233,7 @@ describe("the repair pass cannot be starved by a poison row (DD-041)", () => {
      else. This is that scenario in miniature: batch size 1, one poison row that is
      older than the row behind it. */
   it("eventually reaches a healthy row queued behind a permanently failing one", async () => {
+    vi.useFakeTimers();
     // A content failure, because only content is charged against the cap (DD-045):
     // an unreachable model would abort each pass instead of capping the poison row.
     const deps = createFakeDeps({ ollama: { generate: "wrongFields" } });
@@ -221,6 +244,7 @@ describe("the repair pass cannot be starved by a poison row (DD-041)", () => {
 
     for (let pass = 0; pass < MAX_ENHANCEMENT_ATTEMPTS; pass += 1) {
       await repairPass(deps, 1);
+      skipBackoff();
     }
     // The poison row is now capped out; only then can the healthy row be claimed.
     deps.ollama.setGenerateMode("ok");

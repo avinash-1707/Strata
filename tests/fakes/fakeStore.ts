@@ -306,6 +306,9 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
         status: "compressed",
         needsEmbedding: embedding === null,
         embeddingModel: enhancement.embeddingModel,
+        // DD-045: progress spends the failure history.
+        enhancementAttempts: 0,
+        lastAttemptAt: null,
       };
       replace(id, next);
       return next;
@@ -403,13 +406,21 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
       return true;
     },
 
-    async findEnhancementBacklog(limit, maxAttempts) {
+    async findEnhancementBacklog(limit, policy) {
       await enter("findEnhancementBacklog");
+      const now = Date.now();
       return live()
         .filter((row) => row.status === "raw" || row.needsEmbedding)
         // DD-041: without this, a row that always fails holds its slot forever and
         // starves everything behind it, because the order below is by age.
-        .filter((row) => row.enhancementAttempts < maxAttempts)
+        .filter((row) => row.enhancementAttempts < policy.maxAttempts)
+        // DD-045: exponential backoff, so a failing row does not spend its whole cap
+        // inside a few minutes of consecutive passes.
+        .filter(
+          (row) =>
+            row.lastAttemptAt === null ||
+            row.lastAttemptAt.getTime() + policy.retryBaseMs * 2 ** row.enhancementAttempts <= now,
+        )
         .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
         .slice(0, limit);
     },

@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { memoryIdSchema } from "../../src/contracts/common.js";
 import { isStrataError, StrataError } from "../../src/errors.js";
 import { EMBEDDING_DIMENSIONS } from "../../src/ollama/embedding.js";
+import type { EnhancementRetryPolicy } from "../../src/store/types.js";
 import { createFakeStore } from "./fakeStore.js";
 
 function vector(seed: number): number[] {
@@ -11,8 +12,10 @@ function vector(seed: number): number[] {
 
 const LIMIT = 10;
 
-/** Local to these tests: the fake enforces the cap, it does not own the number. */
+/** Local to these tests: the fake enforces the policy, it does not own the numbers. */
 const ATTEMPT_CAP = 3;
+const RETRY_BASE_MS = 1_000;
+const POLICY: EnhancementRetryPolicy = { maxAttempts: ATTEMPT_CAP, retryBaseMs: RETRY_BASE_MS };
 
 describe("fake store: live-row filtering (DD-012)", () => {
   it("hides soft-deleted rows from every read", async () => {
@@ -338,7 +341,7 @@ describe("fake store: setDown covers the Postgres-down row of the failure table"
     await expect(store.searchByTag(["x"], "any", LIMIT)).rejects.toSatisfy(isDbFailure);
     await expect(store.touchUsage(["a"])).rejects.toSatisfy(isDbFailure);
     await expect(store.softDelete("a")).rejects.toSatisfy(isDbFailure);
-    await expect(store.findEnhancementBacklog(LIMIT, ATTEMPT_CAP)).rejects.toSatisfy(isDbFailure);
+    await expect(store.findEnhancementBacklog(LIMIT, POLICY)).rejects.toSatisfy(isDbFailure);
     await expect(store.restore("a")).rejects.toSatisfy(isDbFailure);
     await expect(store.recordEnhancementAttempt("a")).rejects.toSatisfy(isDbFailure);
     await expect(
@@ -489,7 +492,7 @@ describe("fake store: backlog (DD-005 stage 3)", () => {
       ],
     });
 
-    const claimed = await store.findEnhancementBacklog(LIMIT, ATTEMPT_CAP);
+    const claimed = await store.findEnhancementBacklog(LIMIT, POLICY);
     expect(claimed.map((row) => row.id)).toEqual(["raw", "unembedded"]);
   });
 
@@ -504,7 +507,7 @@ describe("fake store: backlog (DD-005 stage 3)", () => {
       ],
     });
 
-    const claimed = await store.findEnhancementBacklog(LIMIT, ATTEMPT_CAP);
+    const claimed = await store.findEnhancementBacklog(LIMIT, POLICY);
     expect(claimed.map((row) => row.id)).toEqual(["fresh"]);
   });
 
@@ -517,6 +520,56 @@ describe("fake store: backlog (DD-005 stage 3)", () => {
     const row = store.rows.find((candidate) => candidate.id === "a");
     expect(row?.enhancementAttempts).toBe(2);
     expect(row?.lastAttemptAt).toBeInstanceOf(Date);
+  });
+});
+
+/* The conformance suite proves both stores wait; it cannot prove the wait *grows*
+   without a clock it can move. This can, and the fake's arithmetic is the same
+   `base · 2^attempts` the SQL predicate computes (DD-045). */
+describe("fake store: enhancement backoff grows with attempts (DD-045)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("lengthens the wait after every failure", async () => {
+    vi.useFakeTimers();
+    const store = createFakeStore({ rows: [{ id: "a", summary: "s", status: "raw" }] });
+
+    await store.recordEnhancementAttempt("a");
+    vi.advanceTimersByTime(RETRY_BASE_MS * 2);
+    await expect(store.findEnhancementBacklog(LIMIT, POLICY)).resolves.toHaveLength(1);
+
+    await store.recordEnhancementAttempt("a");
+    vi.advanceTimersByTime(RETRY_BASE_MS * 2);
+    // The wait that sufficed after one failure no longer does after two.
+    await expect(store.findEnhancementBacklog(LIMIT, POLICY)).resolves.toEqual([]);
+
+    vi.advanceTimersByTime(RETRY_BASE_MS * 2);
+    await expect(store.findEnhancementBacklog(LIMIT, POLICY)).resolves.toHaveLength(1);
+  });
+
+  it("claims a row that has never been attempted immediately", async () => {
+    const store = createFakeStore({ rows: [{ id: "a", summary: "s", status: "raw" }] });
+
+    await expect(store.findEnhancementBacklog(LIMIT, POLICY)).resolves.toHaveLength(1);
+  });
+
+  it("clears the wait when the row makes progress", async () => {
+    const store = createFakeStore({ rows: [{ id: "a", summary: "s", status: "raw" }] });
+    await store.recordEnhancementAttempt("a");
+
+    await store.applyEnhancement("a", {
+      summary: "compressed",
+      tags: [],
+      embedding: null,
+      embeddingModel: null,
+    });
+
+    // Still unembedded, so still in the backlog — but no longer serving a sentence
+    // for a failure it has since recovered from.
+    const claimed = await store.findEnhancementBacklog(LIMIT, POLICY);
+    expect(claimed.map((row) => row.id)).toEqual(["a"]);
+    expect(claimed[0]?.enhancementAttempts).toBe(0);
   });
 });
 

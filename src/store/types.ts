@@ -23,6 +23,10 @@ export interface MemoryStore {
   /**
    * DD-005 stage 2. Resolves `undefined` when the row is no longer live, which
    * happens when a `forget` lands between the insert and the enhancement.
+   *
+   * Clears `enhancement_attempts` and `last_attempt_at`: this row just made
+   * progress, so its failure history is spent. Without the reset a row that
+   * eventually compressed would still be one bad day from the cap (DD-045).
    */
   applyEnhancement(id: string, enhancement: Enhancement): Promise<MemoryRecord | undefined>;
 
@@ -72,11 +76,14 @@ export interface MemoryStore {
    * Named `find`, not `claim`: it takes no lock, which is correct for a
    * single-process server but must not be mistaken for `for update skip locked`.
    *
-   * `maxAttempts` is a parameter rather than a constant here so the retry policy
-   * lives in `config/budgets.ts` with the rest of the design budgets; the store
-   * enforces the filter but does not own the number (DD-041).
+   * The policy is a parameter rather than a constant here so it lives in
+   * `config/budgets.ts` with the rest of the design budgets; the store enforces the
+   * filter but does not own the numbers (DD-041).
    */
-  findEnhancementBacklog(limit: number, maxAttempts: number): Promise<readonly MemoryRecord[]>;
+  findEnhancementBacklog(
+    limit: number,
+    policy: EnhancementRetryPolicy,
+  ): Promise<readonly MemoryRecord[]>;
 
   /**
    * Increments `enhancement_attempts` and stamps `last_attempt_at` (DD-041). Called
@@ -85,6 +92,14 @@ export interface MemoryStore {
    * letting it starve everything behind it.
    */
   recordEnhancementAttempt(id: string): Promise<void>;
+}
+
+/** DD-045. Both numbers come from `config/budgets.ts`; the store only applies them. */
+export interface EnhancementRetryPolicy {
+  /** A row at or above this many failures leaves the backlog for good (DD-041). */
+  readonly maxAttempts: number;
+  /** A row waits `retryBaseMs * 2^attempts` after a failure before it is claimable. */
+  readonly retryBaseMs: number;
 }
 
 /**

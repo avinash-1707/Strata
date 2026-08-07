@@ -2,7 +2,12 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { MAX_ENHANCEMENT_ATTEMPTS } from "../../src/config/budgets.js";
 import { EMBEDDING_DIMENSIONS } from "../../src/ollama/embedding.js";
-import type { MemoryRecord, MemoryStore, NewMemory } from "../../src/store/types.js";
+import type {
+  EnhancementRetryPolicy,
+  MemoryRecord,
+  MemoryStore,
+  NewMemory,
+} from "../../src/store/types.js";
 
 /**
  * The `MemoryStore` contract, as a suite any implementation must pass (DD-032 item
@@ -25,6 +30,15 @@ export interface StoreHarness {
 }
 
 const LIMIT = 20;
+
+/**
+ * Backoff disabled, so cases about *which* rows the backlog holds are not also
+ * asserting how long it waits. The wait itself gets its own case below (DD-045).
+ */
+const NO_BACKOFF: EnhancementRetryPolicy = {
+  maxAttempts: MAX_ENHANCEMENT_ATTEMPTS,
+  retryBaseMs: 0,
+};
 
 /** pgvector rejects a width mismatch outright, so every vector here must be exact. */
 function vector(seed: number): number[] {
@@ -422,7 +436,7 @@ export function describeMemoryStore(
       it("claims a raw row", async () => {
         const row = await store.insertRaw(newMemory());
 
-        const backlog = await store.findEnhancementBacklog(LIMIT, MAX_ENHANCEMENT_ATTEMPTS);
+        const backlog = await store.findEnhancementBacklog(LIMIT, NO_BACKOFF);
 
         expect(backlog.map((candidate) => candidate.id)).toContain(row.id);
       });
@@ -430,7 +444,7 @@ export function describeMemoryStore(
       it("claims a compressed row that still needs an embedding", async () => {
         const row = await compressed({}, null);
 
-        const backlog = await store.findEnhancementBacklog(LIMIT, MAX_ENHANCEMENT_ATTEMPTS);
+        const backlog = await store.findEnhancementBacklog(LIMIT, NO_BACKOFF);
 
         expect(backlog.map((candidate) => candidate.id)).toContain(row.id);
       });
@@ -438,7 +452,7 @@ export function describeMemoryStore(
       it("leaves a fully enhanced row alone — this is what makes repair idempotent", async () => {
         const row = await compressed({}, vector(1));
 
-        const backlog = await store.findEnhancementBacklog(LIMIT, MAX_ENHANCEMENT_ATTEMPTS);
+        const backlog = await store.findEnhancementBacklog(LIMIT, NO_BACKOFF);
 
         expect(backlog.map((candidate) => candidate.id)).not.toContain(row.id);
       });
@@ -447,7 +461,7 @@ export function describeMemoryStore(
         const row = await store.insertRaw(newMemory());
         await store.softDelete(row.id);
 
-        const backlog = await store.findEnhancementBacklog(LIMIT, MAX_ENHANCEMENT_ATTEMPTS);
+        const backlog = await store.findEnhancementBacklog(LIMIT, NO_BACKOFF);
 
         expect(backlog.map((candidate) => candidate.id)).not.toContain(row.id);
       });
@@ -457,7 +471,7 @@ export function describeMemoryStore(
         await tick();
         const second = await store.insertRaw(newMemory({ contentHash: "b" }));
 
-        const backlog = await store.findEnhancementBacklog(LIMIT, MAX_ENHANCEMENT_ATTEMPTS);
+        const backlog = await store.findEnhancementBacklog(LIMIT, NO_BACKOFF);
 
         expect(backlog.map((candidate) => candidate.id)).toEqual([first.id, second.id]);
       });
@@ -467,7 +481,7 @@ export function describeMemoryStore(
         await store.insertRaw(newMemory({ contentHash: "b" }));
 
         await expect(
-          store.findEnhancementBacklog(1, MAX_ENHANCEMENT_ATTEMPTS),
+          store.findEnhancementBacklog(1, NO_BACKOFF),
         ).resolves.toHaveLength(1);
       });
 
@@ -475,7 +489,7 @@ export function describeMemoryStore(
         const row = await store.insertRaw(newMemory());
 
         await store.recordEnhancementAttempt(row.id);
-        const [claimed] = await store.findEnhancementBacklog(LIMIT, MAX_ENHANCEMENT_ATTEMPTS);
+        const [claimed] = await store.findEnhancementBacklog(LIMIT, NO_BACKOFF);
 
         expect(claimed?.enhancementAttempts).toBe(1);
         expect(claimed?.lastAttemptAt).toBeInstanceOf(Date);
@@ -489,9 +503,45 @@ export function describeMemoryStore(
           await store.recordEnhancementAttempt(row.id);
         }
 
-        const backlog = await store.findEnhancementBacklog(LIMIT, MAX_ENHANCEMENT_ATTEMPTS);
+        const backlog = await store.findEnhancementBacklog(LIMIT, NO_BACKOFF);
 
         expect(backlog.map((candidate) => candidate.id)).not.toContain(row.id);
+      });
+
+      /* DD-045. Without the wait, five consecutive passes inside five minutes spend a
+         row's whole cap, and each of those retries costs a CPU-bound generation. */
+      it("holds a just-attempted row back until its backoff elapses", async () => {
+        const row = await store.insertRaw(newMemory());
+        await store.recordEnhancementAttempt(row.id);
+
+        const waiting = await store.findEnhancementBacklog(LIMIT, {
+          maxAttempts: MAX_ENHANCEMENT_ATTEMPTS,
+          retryBaseMs: 60_000,
+        });
+        // The same row under a base of zero: proves the exclusion is the wait and not
+        // "any attempted row is gone", which the cap already covers.
+        const elapsed = await store.findEnhancementBacklog(LIMIT, NO_BACKOFF);
+
+        expect(waiting.map((candidate) => candidate.id)).not.toContain(row.id);
+        expect(elapsed.map((candidate) => candidate.id)).toContain(row.id);
+      });
+
+      /* DD-045: otherwise a row that historically struggled is one bad day from the
+         cap forever, even after it eventually compressed. */
+      it("clears the failure history when the row makes progress", async () => {
+        const row = await store.insertRaw(newMemory());
+        await store.recordEnhancementAttempt(row.id);
+        await store.recordEnhancementAttempt(row.id);
+
+        const updated = await store.applyEnhancement(row.id, {
+          summary: "compressed at last",
+          tags: [],
+          embedding: vector(2),
+          embeddingModel: "conformance-model",
+        });
+
+        expect(updated?.enhancementAttempts).toBe(0);
+        expect(updated?.lastAttemptAt).toBeNull();
       });
 
       it("tolerates an attempt against an id nothing carries", async () => {

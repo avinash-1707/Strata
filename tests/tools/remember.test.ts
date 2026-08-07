@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { RAW_SUMMARY_LENGTH } from "../../src/config/budgets.js";
+import { ENHANCEMENT_RETRY_POLICY, RAW_SUMMARY_LENGTH } from "../../src/config/budgets.js";
 import { StrataError, isStrataError } from "../../src/errors.js";
 import { contentHash } from "../../src/hash.js";
 import { enhanceMemory } from "../../src/tools/enhance.js";
@@ -109,7 +109,7 @@ describe("remember: Ollama is not load-bearing (DD-005)", () => {
     const deps = createFakeDeps({ ollama: { embed: "unavailable", generate: "unavailable" } });
     const stored = await remember({ content: CONTENT }, deps);
 
-    const backlog = await deps.store.findEnhancementBacklog(10, 5);
+    const backlog = await deps.store.findEnhancementBacklog(10, ENHANCEMENT_RETRY_POLICY);
     expect(backlog.map((row) => row.id)).toContain(stored.id);
   });
 

@@ -40,6 +40,21 @@ export const REPAIR_BATCH_SIZE = 10;
 export const MAX_ENHANCEMENT_ATTEMPTS = 5;
 
 /**
+ * Backoff base for a row the model could not handle: the backlog leaves it alone
+ * for `base * 2^attempts` (DD-045). Without it, a row that fails on content burns
+ * its whole cap in five consecutive minutes and is written off before an operator
+ * could notice — and each of those retries costs a CPU-bound generation (DD-028).
+ * One minute is the repair cadence, so a first failure waits about two passes and a
+ * fourth waits sixteen.
+ */
+export const ENHANCEMENT_RETRY_BASE_MS = 60_000;
+
+export const ENHANCEMENT_RETRY_POLICY = {
+  maxAttempts: MAX_ENHANCEMENT_ATTEMPTS,
+  retryBaseMs: ENHANCEMENT_RETRY_BASE_MS,
+} as const;
+
+/**
  * Cadence of DD-005 stage 3. Frequent enough that a degraded write waits about a
  * minute for its retry, rare enough that repair's CPU-bound model calls do not
  * compete with foreground `remember` traffic on a box with no GPU (DD-028).

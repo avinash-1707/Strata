@@ -1,6 +1,6 @@
 import { StrataError, isStrataError } from "../../errors.js";
 import type { Db, Queryable, Row } from "../../db/types.js";
-import type { Enhancement, MemoryRecord, NewMemory } from "../types.js";
+import type { EnhancementRetryPolicy, Enhancement, MemoryRecord, NewMemory } from "../types.js";
 
 /** Postgres unique_violation — the memories_hash_live_idx raising on a race. */
 const UNIQUE_VIOLATION = "23505";
@@ -140,13 +140,17 @@ export async function applyEnhancement(
   const rows = await db.query<MemoryRow>(
     // coalesce keeps an existing vector when this pass produced none: compression
     // alone must not blind semantic search to a previously embedded row (DD-005).
-    `update memories set
+    // The counter reset is DD-045: this row made progress, so its failure history is
+    // spent — and a still-incomplete row is charged again by its own failure path.
+     `update memories set
        summary = $2,
        tags = $3,
        status = 'compressed',
        needs_embedding = $4,
        embedding = coalesce($5::vector, embedding),
-       embedding_model = $6
+       embedding_model = $6,
+       enhancement_attempts = 0,
+       last_attempt_at = null
      where id = $1 and superseded_by is null and deleted_at is null
      returning ${MEMORY_COLUMNS}`,
     [
@@ -216,15 +220,22 @@ export async function restore(db: Queryable, id: string): Promise<boolean> {
 export async function findEnhancementBacklog(
   db: Queryable,
   limit: number,
-  maxAttempts: number,
+  policy: EnhancementRetryPolicy,
 ): Promise<readonly MemoryRecord[]> {
   const rows = await db.query<MemoryRow>(
+    // The backoff term is server-side `now()`, never a timestamp from the app: two
+    // server processes with drifting clocks would otherwise disagree about which
+    // rows are claimable (DD-045).
     `select ${MEMORY_COLUMNS} from live_memories
      where (status = 'raw' or needs_embedding)
        and enhancement_attempts < $2
+       and (last_attempt_at is null
+            or last_attempt_at <=
+               now() - interval '1 millisecond' * $3::double precision
+                     * power(2, enhancement_attempts))
      order by created_at, id
      limit $1`,
-    [limit, maxAttempts],
+    [limit, policy.maxAttempts, policy.retryBaseMs],
   );
   return rows.map(toMemoryRecord);
 }

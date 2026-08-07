@@ -1,4 +1,4 @@
-import { MAX_ENHANCEMENT_ATTEMPTS, REPAIR_BATCH_SIZE } from "../config/budgets.js";
+import { ENHANCEMENT_RETRY_POLICY, REPAIR_BATCH_SIZE } from "../config/budgets.js";
 import type { ToolDeps } from "../deps.js";
 import { enhanceMemory } from "../tools/enhance.js";
 
@@ -22,7 +22,7 @@ export async function repairPass(
   deps: ToolDeps,
   limit: number = REPAIR_BATCH_SIZE,
 ): Promise<RepairReport> {
-  const backlog = await deps.store.findEnhancementBacklog(limit, MAX_ENHANCEMENT_ATTEMPTS);
+  const backlog = await deps.store.findEnhancementBacklog(limit, ENHANCEMENT_RETRY_POLICY);
 
   let examined = 0;
   let enhanced = 0;
