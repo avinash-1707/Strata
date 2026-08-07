@@ -70,9 +70,9 @@ export const REPAIR_INTERVAL_MS = 60_000;
 export const RECALL_CACHE_TTL_SECONDS = 300;
 
 /**
- * How long a hung close gets before the process exits anyway. Past this, waiting is
- * worse than a non-zero exit: the container never stops and the orchestrator SIGKILLs
- * it, which is the same outcome with no log line explaining it.
+ * How long releasing resources gets before the process exits anyway. Past this,
+ * waiting is worse than a non-zero exit: the container never stops and the
+ * orchestrator SIGKILLs it — the same outcome, with no log line explaining it.
  */
 export const SHUTDOWN_FLOOR_MS = 5_000;
 
@@ -81,10 +81,12 @@ export const SHUTDOWN_FLOOR_MS = 5_000;
  *
  * Node 19+ closes *idle* keep-alive sockets itself, so this is about a request in
  * flight: `close()` waits for those forever, and the slowest Strata handler calls a
- * CPU-bound model. Derived rather than written as a literal because the two constants
- * are coupled and read like independent choices — a drain at or above the floor means
- * the watchdog fires *during* teardown, killing the process at the one moment the
- * write path is most exposed. The remaining budget covers a repair pass in progress
- * plus the pg and Redis closes.
+ * CPU-bound model.
+ *
+ * The two are **sequential, not shared** — the listener drains, then the floor bounds
+ * the client closes — so the worst-case stop is their sum, which must stay under the
+ * orchestrator's stop grace period (Docker's default is 10 s). Derived rather than
+ * written as a literal so that relationship is visible at both ends; raising the floor
+ * without noticing this is how a shutdown starts getting SIGKILLed.
  */
 export const CONNECTION_DRAIN_MS = Math.round(SHUTDOWN_FLOOR_MS * 0.4);
