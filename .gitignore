@@ -1,5 +1,6 @@
-# Internal agentic-development docs — kept local, not published
+# Internal agentic-development docs, kept local, not published
 docs/
+context.md
 
 # Secrets
 .env
