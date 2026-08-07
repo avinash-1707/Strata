@@ -45,14 +45,19 @@ export async function repairPass(
       enhanced += 1;
     } else if (outcome === "degraded") {
       degraded += 1;
-    } else if (outcome === "deferred") {
+    } else if (outcome === "skipped") {
+      skipped += 1;
+    } else {
       /* Ollama is down or too slow. Every remaining row would fail the same way, and
          DD-045 charges none of them for it — so continuing would only spend the
-         batch's model budget proving the outage once per row. */
+         batch's model budget proving the outage once per row. The deferred row was
+         stamped, so the next pass steps over it rather than repeating this. */
+      // The annotation is a compile-time exhaustiveness check: a fifth outcome fails
+      // to assign here rather than being silently absorbed by this branch.
+      const deferred: "deferred" = outcome;
+      deps.log.debug({ id: record.id, outcome: deferred }, "repair pass stopped on this row");
       aborted = true;
       break;
-    } else {
-      skipped += 1;
     }
   }
 

@@ -109,7 +109,12 @@ describe("remember: Ollama is not load-bearing (DD-005)", () => {
     const deps = createFakeDeps({ ollama: { embed: "unavailable", generate: "unavailable" } });
     const stored = await remember({ content: CONTENT }, deps);
 
-    const backlog = await deps.store.findEnhancementBacklog(10, ENHANCEMENT_RETRY_POLICY);
+    // Zero base, because this is about membership: the row's own backoff would
+    // otherwise hide it for a minute and prove nothing about the backlog predicate.
+    const backlog = await deps.store.findEnhancementBacklog(10, {
+      ...ENHANCEMENT_RETRY_POLICY,
+      retryBaseMs: 0,
+    });
     expect(backlog.map((row) => row.id)).toContain(stored.id);
   });
 
@@ -179,7 +184,21 @@ describe("remember: Ollama is not load-bearing (DD-005)", () => {
     expect(stored.status).toBe("raw");
     const row = deps.store.rows.find((candidate) => candidate.id === stored.id);
     expect(row?.enhancementAttempts).toBe(0);
-    expect(row?.lastAttemptAt).toBeNull();
+    // Stamped all the same: uncounted is not the same as invisible, or a row whose
+    // model call always times out would abort every repair pass forever (DD-045).
+    expect(row?.lastAttemptAt).toBeInstanceOf(Date);
+  });
+
+  /* A model that has not been pulled answers 404, and DD-047 makes an unpulled model
+     a routine provisioning state. Charging the corpus for it would write off every
+     row in five passes — DD-045's first defect wearing a different error code. */
+  it("charges no attempt when the model has not been pulled (DD-047)", async () => {
+    const deps = createFakeDeps({ ollama: { generate: "notPulled" } });
+    const stored = await remember({ content: CONTENT }, deps);
+
+    expect(stored.status).toBe("raw");
+    const row = deps.store.rows.find((candidate) => candidate.id === stored.id);
+    expect(row?.enhancementAttempts).toBe(0);
   });
 
   it("does not count an attempt when everything succeeded", async () => {

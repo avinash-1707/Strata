@@ -144,13 +144,16 @@ if (PG_URL === undefined) {
       expect(hits).toHaveLength(TARGET_ROWS);
     });
 
-    it("still ranks by distance when nothing is filtered out", async () => {
+    it("draws the unfiltered query from the near cluster", async () => {
       const hits = await store.searchSemantic(query, { limit: LIMIT });
 
       // The decoys really are nearer — which is what makes the cases above a test.
+      // Membership, not order: `relaxed_order` is explicitly allowed to return an
+      // approximate ordering, and asserting a strict sort here would be asserting
+      // something the configuration does not promise (DD-046).
+      expect(hits).toHaveLength(LIMIT);
       expect(hits.every((hit) => hit.memory.sessionId === "decoys")).toBe(true);
-      const similarities = hits.map((hit) => hit.similarity ?? 0);
-      expect([...similarities].sort((a, b) => b - a)).toEqual(similarities);
+      expect(hits.every((hit) => (hit.similarity ?? 0) > 0.5)).toBe(true);
     });
   });
 }

@@ -44,14 +44,31 @@ if (PG_URL === undefined) {
   });
 
   describe("migration runner against real Postgres (DD-013)", () => {
-    it("applies 001 cleanly to an empty database, then no-ops on a second run", async () => {
-      await expect(migrate(scratch)).resolves.toEqual(["001_initial_schema.sql"]);
+    const ALL_MIGRATIONS = ["001_initial_schema.sql", "002_require_pgvector_08.sql"];
+
+    it("applies every migration cleanly to an empty database, then no-ops", async () => {
+      await expect(migrate(scratch)).resolves.toEqual(ALL_MIGRATIONS);
       await expect(migrate(scratch)).resolves.toEqual([]);
 
       const applied = await scratch.query<{ version: string }>(
         "select version from schema_migrations order by version",
       );
-      expect(applied.map((row) => row.version)).toEqual(["001_initial_schema.sql"]);
+      expect(applied.map((row) => row.version)).toEqual(ALL_MIGRATIONS);
+    });
+
+    /* The version is a runtime contract, not a packaging detail: `hnsw.iterative_scan`
+       does not exist below 0.8, and without it every filtered semantic search silently
+       under-returns (DD-046). Pinning the image cannot cover a volume created under an
+       older one, because `create extension if not exists` never upgrades. */
+    it("leaves pgvector at 0.8 or newer", async () => {
+      const rows = await scratch.query<{ major: number; minor: number }>(
+        `select split_part(extversion, '.', 1)::int as major,
+                split_part(extversion, '.', 2)::int as minor
+         from pg_extension where extname = 'vector'`,
+      );
+      const version = rows[0];
+      expect(version).toBeDefined();
+      expect(version!.major > 0 || version!.minor >= 8).toBe(true);
     });
 
     it("left a usable schema behind: the live view answers a query", async () => {

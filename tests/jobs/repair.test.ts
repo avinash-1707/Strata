@@ -25,10 +25,13 @@ afterEach(() => {
 
 describe("the repair pass (DD-005 stage 3)", () => {
   it("upgrades a row left raw by an earlier outage", async () => {
+    vi.useFakeTimers();
     const deps = createFakeDeps({ ollama: { generate: "unavailable" } });
     const stored = await remember({ content: "a decision worth keeping" }, deps);
     expect(stored.status).toBe("raw");
 
+    // The failed write stamped the row, so it is waiting out one backoff (DD-045).
+    skipBackoff();
     deps.ollama.setGenerateMode("ok");
     const report = await repairPass(deps);
 
@@ -59,8 +62,10 @@ describe("the repair pass (DD-005 stage 3)", () => {
   /* "Safe to run repeatedly" is the whole contract: a fully enhanced row leaves the
      backlog, so a second pass has nothing to do. */
   it("is idempotent across two runs", async () => {
+    vi.useFakeTimers();
     const deps = createFakeDeps({ ollama: { generate: "unavailable" } });
     await remember({ content: "a decision worth keeping" }, deps);
+    skipBackoff();
     deps.ollama.setGenerateMode("ok");
 
     const first = await repairPass(deps);
@@ -108,14 +113,44 @@ describe("the repair pass (DD-005 stage 3)", () => {
     expect(report).toMatchObject({ examined: 1, enhanced: 0, degraded: 0, aborted: true });
     // Not just the row it stopped on: the rows behind it were never touched either.
     expect(deps.store.rows.map((row) => row.enhancementAttempts)).toEqual([0, 0, 0]);
+    expect(deps.store.rows.map((row) => row.lastAttemptAt === null)).toEqual([false, true, true]);
     expect(deps.ollama.generateCalls).toHaveLength(1);
   });
 
+  /* One row whose generation times out looks exactly like a global outage — same
+     error code — but must not be able to abort every pass forever. The deferral stamp
+     is what puts it behind a backoff so the next pass reaches the rows behind it
+     (DD-045). Without the stamp this loops on "poison" until the process dies. */
+  it("reaches the rows behind a row that always times out", async () => {
+    vi.useFakeTimers();
+    const deps = createFakeDeps();
+    deps.ollama.timeOutOn("poison");
+    deps.store.seed([
+      { id: "slow", summary: "s", status: "raw", rawContent: "poison", createdAt: new Date(1_000) },
+      { id: "healthy", summary: "h", status: "raw", createdAt: new Date(2_000) },
+    ]);
+
+    const first = await repairPass(deps, 1);
+    // Uncounted, but stamped — that is the whole difference.
+    const slow = deps.store.rows.find((row) => row.id === "slow");
+    expect(first).toMatchObject({ examined: 1, aborted: true });
+    expect(slow?.enhancementAttempts).toBe(0);
+    expect(slow?.lastAttemptAt).toBeInstanceOf(Date);
+
+    // The next pass, still inside the slow row's backoff window.
+    const second = await repairPass(deps, 1);
+
+    expect(second).toMatchObject({ examined: 1, enhanced: 1, aborted: false });
+    expect(deps.store.rows.find((row) => row.id === "healthy")?.status).toBe("compressed");
+  });
+
   it("resumes at full strength once the model is back", async () => {
+    vi.useFakeTimers();
     const deps = createFakeDeps({ ollama: { generate: "unavailable" } });
     deps.store.seed([{ id: "a", summary: "a", status: "raw" }]);
 
     await repairPass(deps);
+    skipBackoff();
     deps.ollama.setGenerateMode("ok");
     const second = await repairPass(deps);
 

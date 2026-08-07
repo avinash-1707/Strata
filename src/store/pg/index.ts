@@ -2,6 +2,7 @@ import type { Db } from "../../db/types.js";
 import type { MemoryStore } from "../types.js";
 import {
   applyEnhancement,
+  deferEnhancement,
   findEnhancementBacklog,
   findLiveByContentHash,
   insertRaw,
@@ -28,5 +29,6 @@ export function createPgStore(db: Db): MemoryStore {
     restore: (id) => restore(db, id),
     findEnhancementBacklog: (limit, maxAttempts) => findEnhancementBacklog(db, limit, maxAttempts),
     recordEnhancementAttempt: (id) => recordEnhancementAttempt(db, id),
+    deferEnhancement: (id) => deferEnhancement(db, id),
   };
 }

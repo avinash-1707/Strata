@@ -526,6 +526,47 @@ export function describeMemoryStore(
         expect(elapsed.map((candidate) => candidate.id)).toContain(row.id);
       });
 
+      /* The wait must *grow*, not merely exist: a predicate of
+         `last_attempt_at <= now() - base` passes every other case in this suite. Base
+         and sleep are chosen with a 4× margin — a one-attempt row waits 200ms and a
+         four-attempt row waits 1.6s, and the query runs 400ms in (DD-045). */
+      it("lengthens the wait with each attempt", async () => {
+        const once = await store.insertRaw(newMemory({ contentHash: "once" }));
+        const often = await store.insertRaw(newMemory({ contentHash: "often" }));
+        await store.recordEnhancementAttempt(once.id);
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          await store.recordEnhancementAttempt(often.id);
+        }
+
+        await new Promise<void>((resolve) => setTimeout(resolve, 400));
+        const backlog = await store.findEnhancementBacklog(LIMIT, {
+          maxAttempts: MAX_ENHANCEMENT_ATTEMPTS,
+          retryBaseMs: 100,
+        });
+
+        const claimed = backlog.map((candidate) => candidate.id);
+        expect(claimed).toContain(once.id);
+        expect(claimed).not.toContain(often.id);
+      });
+
+      /* DD-045: an uncounted failure still has to step aside, or a row whose model
+         call times out is handed to every pass forever and aborts each one. */
+      it("holds a deferred row back without charging it an attempt", async () => {
+        const row = await store.insertRaw(newMemory());
+
+        await store.deferEnhancement(row.id);
+
+        const waiting = await store.findEnhancementBacklog(LIMIT, {
+          maxAttempts: MAX_ENHANCEMENT_ATTEMPTS,
+          retryBaseMs: 60_000,
+        });
+        const [claimed] = await store.findEnhancementBacklog(LIMIT, NO_BACKOFF);
+
+        expect(waiting.map((candidate) => candidate.id)).not.toContain(row.id);
+        expect(claimed?.enhancementAttempts).toBe(0);
+        expect(claimed?.lastAttemptAt).toBeInstanceOf(Date);
+      });
+
       /* DD-045: otherwise a row that historically struggled is one bad day from the
          cap forever, even after it eventually compressed. */
       it("clears the failure history when the row makes progress", async () => {

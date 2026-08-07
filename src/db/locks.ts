@@ -1,4 +1,4 @@
-import { describeUnknown } from "../errors.js";
+import { describeUnknown, StrataError } from "../errors.js";
 import type { Logger } from "../logger.js";
 import type { Db } from "./types.js";
 
@@ -48,7 +48,19 @@ export async function withRepairLock<T>(
     }
 
     // If this throws, the connection is discarded and the lock goes with it.
-    await conn.query("select pg_advisory_unlock($1)", [REPAIR_LOCK_ID]);
+    const unlocked = await conn.query<{ released: boolean }>(
+      "select pg_advisory_unlock($1) as released",
+      [REPAIR_LOCK_ID],
+    );
+    if (unlocked[0]?.released !== true) {
+      /* Should be unreachable — this session acquired it. If it ever happens the
+         connection is holding a lock nothing will release, and returning it to the
+         pool would block every other process for the life of this one. Throwing
+         hands it to `withConnection`, which destroys it. */
+      throw new StrataError("DB_QUERY_FAILED", "the repair lock could not be released", {
+        publicMessage: "the repair lock could not be released",
+      });
+    }
     return result;
   });
 }

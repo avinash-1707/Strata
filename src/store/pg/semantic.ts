@@ -24,13 +24,22 @@ const HNSW_EF_SEARCH = 80;
 const HNSW_ITERATIVE_SCAN = "relaxed_order";
 
 /**
- * The ceiling on that iterative scan. Pinned rather than inherited: it is the only
- * thing standing between a highly selective filter and a walk of the whole index,
- * and a default that changed under us would change search latency silently. 20k is
- * far above this deployment's corpus, so at present it never truncates a result —
- * which is the intent. Correctness first at single-user scale (DD-017).
+ * The tuple ceiling on that iterative scan, pinned rather than inherited so a change
+ * of default cannot change search behavior silently. 20k is far above this
+ * deployment's corpus, so it never truncates a result here — which is the intent
+ * (DD-017: correctness first at single-user scale).
  */
 const HNSW_MAX_SCAN_TUPLES = 20_000;
+
+/**
+ * The ceiling that actually binds. The iterative scan also stops when its buffer
+ * reaches `scan_mem_multiplier × work_mem`, and at 768 dimensions a vector costs
+ * ~3 KB — so the default (1 × the usual 4 MB) gives out around 1.3k tuples, well
+ * before `max_scan_tuples`. Hitting it reintroduces exactly the under-return DD-046
+ * exists to prevent, silently. 2 buys headroom over a corpus this size without
+ * pretending to be a measurement; the eval harness re-examines it (DD-021).
+ */
+const HNSW_SCAN_MEM_MULTIPLIER = 2;
 
 interface SemanticRow extends MemoryRow {
   readonly similarity: number;
@@ -57,14 +66,19 @@ export async function searchSemantic(
     // constant, never caller input. One statement, not three: this is a foreground
     // read path and each round trip is on the agent's latency.
     await tx.query(
+      // Adding a bind parameter to this call would switch it to the extended
+      // protocol, where a multi-statement string fails outright.
       `set local hnsw.ef_search = ${String(HNSW_EF_SEARCH)};
        set local hnsw.iterative_scan = '${HNSW_ITERATIVE_SCAN}';
-       set local hnsw.max_scan_tuples = ${String(HNSW_MAX_SCAN_TUPLES)}`,
+       set local hnsw.max_scan_tuples = ${String(HNSW_MAX_SCAN_TUPLES)};
+       set local hnsw.scan_mem_multiplier = ${String(HNSW_SCAN_MEM_MULTIPLIER)}`,
     );
 
     const rows = await tx.query<SemanticRow>(
-      // No tiebreak on the order by: HNSW supplies rows in distance order, and a
-      // secondary sort key would force a sort node that defeats the index.
+      /* No tiebreak on the order by: a secondary sort key would force a sort node
+         that defeats the index. Under `relaxed_order` the rows arrive only
+         approximately sorted, which is why each carries its own `similarity` and why
+         fusion re-ranks rather than trusting this order (DD-046, DD-033). */
       `select ${MEMORY_COLUMNS}, 1 - (embedding <=> $1::vector) as similarity
        from live_memories
        where embedding is not null

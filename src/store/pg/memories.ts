@@ -142,7 +142,7 @@ export async function applyEnhancement(
     // alone must not blind semantic search to a previously embedded row (DD-005).
     // The counter reset is DD-045: this row made progress, so its failure history is
     // spent — and a still-incomplete row is charged again by its own failure path.
-     `update memories set
+    `update memories set
        summary = $2,
        tags = $3,
        status = 'compressed',
@@ -249,4 +249,10 @@ export async function recordEnhancementAttempt(db: Queryable, id: string): Promi
      where id = $1`,
     [id],
   );
+}
+
+export async function deferEnhancement(db: Queryable, id: string): Promise<void> {
+  // The stamp without the increment: the row steps aside for one backoff window,
+  // but keeps its record clean because the failure was not its fault (DD-045).
+  await db.query("update memories set last_attempt_at = now() where id = $1", [id]);
 }

@@ -23,6 +23,14 @@ export interface FakeOllama extends Ollama {
   readonly generateCalls: readonly { prompt: string; options: GenerateOptions | undefined }[];
   setEmbedMode(mode: EmbedMode): void;
   setGenerateMode(mode: GenerateMode): void;
+  /**
+   * Makes `generate` time out for prompts containing `marker`, whatever the mode.
+   * A whole-service outage and one slow row are the same error code
+   * (`AbortSignal.timeout` surfaces as OLLAMA_UNAVAILABLE) but not the same
+   * situation: the second must not be able to abort every repair pass forever
+   * (DD-045).
+   */
+  timeOutOn(marker: string): void;
   /** Blocks `embed` until the returned function is called. */
   blockEmbed(): () => void;
   /** Blocks `generate` until the returned function is called. */
@@ -41,6 +49,8 @@ export type EmbedMode =
 export type GenerateMode =
   | "ok"
   | "unavailable"
+  /** Reachable, but the model was never pulled: a 404, which DD-047 makes routine. */
+  | "notPulled"
   /** Not JSON at all. */
   | "prose"
   /** JSON with the right shape wrapped in a fenced block and commentary. */
@@ -75,6 +85,7 @@ export function createFakeOllama(options: FakeOllamaOptions = {}): FakeOllama {
   let generateMode: GenerateMode = options.generate ?? "ok";
   let embedGate: Promise<void> | undefined;
   let generateGate: Promise<void> | undefined;
+  let slowMarker: string | undefined;
 
   function gate(): { promise: Promise<void>; release: () => void } {
     let release = (): void => undefined;
@@ -98,6 +109,10 @@ export function createFakeOllama(options: FakeOllamaOptions = {}): FakeOllama {
 
     setGenerateMode(mode) {
       generateMode = mode;
+    },
+
+    timeOutOn(marker) {
+      slowMarker = marker;
     },
 
     blockEmbed() {
@@ -150,10 +165,21 @@ export function createFakeOllama(options: FakeOllamaOptions = {}): FakeOllama {
       if (generateGate !== undefined) {
         await generateGate;
       }
+      if (slowMarker !== undefined && prompt.includes(slowMarker)) {
+        // The real client's wrapping of an AbortSignal.timeout — indistinguishable
+        // from an unreachable service by code alone (ollama/client.ts).
+        throw new StrataError("OLLAMA_UNAVAILABLE", "fake ollama: generate timed out");
+      }
 
       switch (generateMode) {
         case "unavailable":
           throw new StrataError("OLLAMA_UNAVAILABLE", "fake ollama: generate unreachable");
+        case "notPulled":
+          // Shaped exactly like the real client's non-2xx branch: the `status` in
+          // details is what tells "never answered" from "answered badly" (DD-045).
+          throw new StrataError("OLLAMA_BAD_RESPONSE", "fake ollama: answered 404", {
+            details: { path: "/api/generate", status: 404 },
+          });
         case "prose":
           return "I think the key point here is that the user cares about authentication.";
         case "fencedJson":

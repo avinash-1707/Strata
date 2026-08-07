@@ -425,6 +425,15 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
         .slice(0, limit);
     },
 
+    async deferEnhancement(id) {
+      await enter("deferEnhancement");
+      const current = rows.find((row) => row.id === id);
+      if (current !== undefined) {
+        // The stamp without the increment (DD-045).
+        replace(id, { ...current, lastAttemptAt: new Date() });
+      }
+    },
+
     async recordEnhancementAttempt(id) {
       await enter("recordEnhancementAttempt");
       // Searches `rows`, not `live()`: an attempt may be recorded against a row a

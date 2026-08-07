@@ -49,14 +49,21 @@ type Attempted<T> =
   | { readonly ok: false; readonly kind: FailureKind };
 
 function classify(error: unknown): FailureKind {
-  if (isStrataError(error)) {
-    return error.code === "OLLAMA_UNAVAILABLE" || error.code === "DB_QUERY_FAILED"
-      ? "transport"
-      : "content";
+  if (!isStrataError(error)) {
+    // A non-StrataError here is a parse or validation throw from our own code, which
+    // is about the answer the model gave. Unreachable service always arrives coded.
+    return "content";
   }
-  // A non-StrataError here is a parse or validation throw from our own code, which
-  // is about the answer the model gave. Unreachable service always arrives coded.
-  return "content";
+  if (error.code === "OLLAMA_UNAVAILABLE" || error.code === "DB_QUERY_FAILED") {
+    return "transport";
+  }
+  /* OLLAMA_BAD_RESPONSE covers two different things, and only one is the row's fault.
+     An HTTP status means the model never produced output at all — and the commonest
+     status here is 404 for a model that has not been pulled, which DD-047 makes a
+     routine provisioning state. Charging the corpus for that writes off every row in
+     five passes. Without a status, the model did answer and the answer was unusable:
+     that is content. */
+  return error.details?.["status"] === undefined ? "content" : "transport";
 }
 
 export async function enhanceMemory(
@@ -80,12 +87,11 @@ export async function enhanceMemory(
     const content = record.rawContent;
     if (content === null) {
       deps.log.warn({ id: record.id }, "cannot compress: raw content absent");
-      /* An attempt is recorded even though retrying cannot help, because the backlog
-         query matches on `status='raw'` and this row will match forever. Without the
-         counter it holds a slot in every pass — the starvation DD-041 closes, reached
-         by a different arm. */
-      await recordAttempt(record.id, deps);
-      return { record, outcome: "degraded" };
+      /* Charged as content even though retrying cannot help, because the backlog query
+         matches on `status='raw'` and this row will match forever. Without the counter
+         it holds a slot in every pass — the starvation DD-041 closes, reached by a
+         different arm. */
+      return await charge(record, "content", deps);
     }
 
     const compressed = await compress(content, deps, remaining(deadline));
@@ -105,12 +111,24 @@ export async function enhanceMemory(
     return await charge(record, embedded.kind, deps);
   }
 
-  const updated = await deps.store.applyEnhancement(record.id, {
-    summary,
-    tags,
-    embedding: embedded.ok ? embedded.value.vector : null,
-    embeddingModel: embedded.ok ? embedded.value.model : null,
-  });
+  let updated: MemoryRecord | undefined;
+  try {
+    updated = await deps.store.applyEnhancement(record.id, {
+      summary,
+      tags,
+      embedding: embedded.ok ? embedded.value.vector : null,
+      embeddingModel: embedded.ok ? embedded.value.model : null,
+    });
+  } catch (error: unknown) {
+    /* The row is already durable, so a database blip here must degrade like any other
+       stage-2 failure rather than fail the caller's `remember` (DD-005). Uncounted:
+       the write failing says nothing about the content (DD-045). */
+    deps.log.warn(
+      { id: record.id, error: describeUnknown(error) },
+      "could not persist the enhancement",
+    );
+    return await charge(record, "transport", deps);
+  }
 
   if (updated === undefined) {
     // A forget landed mid-enhancement. Recording an attempt against a dead row
@@ -145,9 +163,13 @@ async function charge(
   deps: ToolDeps,
 ): Promise<EnhancementResult> {
   if (kind === "transport") {
+    // Stamped but not counted. Without the stamp the backlog hands this row to the
+    // next pass too, and a row whose model call times out would abort every pass
+    // from here to forever (DD-045).
+    await bookkeep(deps, record.id, "defer", () => deps.store.deferEnhancement(record.id));
     return { record, outcome: "deferred" };
   }
-  await recordAttempt(record.id, deps);
+  await bookkeep(deps, record.id, "attempt", () => deps.store.recordEnhancementAttempt(record.id));
   return { record, outcome: "degraded" };
 }
 
@@ -208,11 +230,19 @@ async function embed(
 }
 
 /** Behind an already-durable write, so a failure costs one extra retry, nothing more. */
-async function recordAttempt(id: string, deps: ToolDeps): Promise<void> {
+async function bookkeep(
+  deps: ToolDeps,
+  id: string,
+  kind: "attempt" | "defer",
+  write: () => Promise<void>,
+): Promise<void> {
   try {
-    await deps.store.recordEnhancementAttempt(id);
+    await write();
   } catch (error: unknown) {
-    deps.log.warn({ id, error: describeUnknown(error) }, "could not record enhancement attempt");
+    deps.log.warn(
+      { id, kind, error: describeUnknown(error) },
+      "could not record enhancement attempt",
+    );
   }
 }
 

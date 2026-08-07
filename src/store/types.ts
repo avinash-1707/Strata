@@ -92,6 +92,17 @@ export interface MemoryStore {
    * letting it starve everything behind it.
    */
   recordEnhancementAttempt(id: string): Promise<void>;
+
+  /**
+   * Stamps `last_attempt_at` **without** incrementing the counter (DD-045).
+   *
+   * An outage is not evidence against the row, so it costs no attempt — but the row
+   * must still step aside. The backlog is oldest-first, and a row whose model call
+   * times out (a long `raw_content` on a CPU-only box is enough, DD-028) would
+   * otherwise be handed to every subsequent pass, abort each one, and starve
+   * everything behind it forever. The stamp puts it behind its own backoff instead.
+   */
+  deferEnhancement(id: string): Promise<void>;
 }
 
 /** DD-045. Both numbers come from `config/budgets.ts`; the store only applies them. */
