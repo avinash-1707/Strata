@@ -3,6 +3,7 @@ import type { Cache } from "./cache/types.js";
 import { REPAIR_INTERVAL_MS } from "./config/budgets.js";
 import { loadConfig } from "./config/env.js";
 import { createDb } from "./db/client.js";
+import { withRepairLock } from "./db/locks.js";
 import { migrate } from "./db/migrate.js";
 import type { Db } from "./db/types.js";
 import type { ToolDeps } from "./deps.js";
@@ -54,15 +55,18 @@ try {
   // confusing tool error.
   const config = loadConfig();
 
-  db = createDb(config, log);
+  // Local binding as well as the module-level one: the shutdown path needs the
+  // latter, and a closure cannot narrow a `let` that another path may reassign.
+  const database = createDb(config, log);
+  db = database;
   // Boot-time migrations own the schema — the pgvector image only runs init
   // scripts on an empty volume, so this is the only reliable owner (DD-013).
-  const applied = await migrate(db);
+  const applied = await migrate(database);
   log.info({ applied: [...applied] }, "database schema is current");
 
   cache = createRedisCache(config, log);
   const deps: ToolDeps = {
-    store: createPgStore(db),
+    store: createPgStore(database),
     cache,
     ollama: createOllamaClient(config),
     config,
@@ -83,8 +87,13 @@ try {
     try {
       deps.background("repairPass", async () => {
         try {
-          const report = await repairPass(deps);
-          if (report.examined > 0) {
+          /* The latch above only guards *this* process. stdio gives every client its
+             own process over one database, so the lock is what keeps N sessions from
+             running N passes over the same backlog (DD-045). */
+          const report = await withRepairLock(database, log, () => repairPass(deps));
+          if (report === undefined) {
+            log.debug({}, "another process is repairing; skipping this pass");
+          } else if (report.examined > 0) {
             log.info({ ...report }, "repair pass finished");
           }
         } finally {

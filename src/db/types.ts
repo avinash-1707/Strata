@@ -21,5 +21,19 @@ export interface Db extends Queryable {
    * has to be set with session-local scope on the same connection as the query.
    */
   withTransaction<T>(fn: (tx: Queryable) => Promise<T>): Promise<T>;
+
+  /**
+   * Runs `fn` on one pooled connection **without** a transaction, for the one thing
+   * a transaction cannot do: hold session-scoped state across minutes of work that
+   * is not database work. Only `pg_try_advisory_lock` needs this (DD-045) — an
+   * advisory lock lives with its session, and the repair pass it guards spends most
+   * of its time inside Ollama, where an open transaction would sit idle holding a
+   * snapshot. Anything needing atomicity uses `withTransaction`.
+   *
+   * **The connection is destroyed rather than pooled if `fn` throws.** Session state
+   * is exactly what a pool must not leak, and a failed `fn` cannot prove it cleaned
+   * up after itself.
+   */
+  withConnection<T>(fn: (conn: Queryable) => Promise<T>): Promise<T>;
   close(): Promise<void>;
 }

@@ -108,6 +108,27 @@ export function createDb(config: Config, log: Logger): Db {
       }
     },
 
+    async withConnection<T>(fn: (conn: Queryable) => Promise<T>): Promise<T> {
+      let client: pg.PoolClient;
+      try {
+        client = await pool.connect();
+      } catch (cause) {
+        throw wrapError("DB_QUERY_FAILED", "could not acquire a database connection", cause);
+      }
+
+      try {
+        const result = await fn({ query: (sql, params) => run(client, sql, params) });
+        client.release();
+        return result;
+      } catch (cause) {
+        // release(true) evicts it from the pool. Whatever session state fn was
+        // holding — an advisory lock, a SET — dies with the connection, which is the
+        // only guarantee available once fn has failed partway through.
+        client.release(true);
+        throw cause;
+      }
+    },
+
     async close() {
       if (closed) {
         return;
