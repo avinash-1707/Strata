@@ -1,6 +1,6 @@
 import { ENHANCEMENT_TIMEOUT_MS } from "../config/budgets.js";
 import type { ToolDeps } from "../deps.js";
-import { describeUnknown } from "../errors.js";
+import { describeUnknown, isStrataError } from "../errors.js";
 import { assertEmbeddingDimensions } from "../ollama/embedding.js";
 import { compressionJsonSchema, parseCompressionResult } from "../ollama/parse.js";
 import { buildCompressionPrompt } from "../ollama/prompts.js";
@@ -15,8 +15,15 @@ import { bumpCorpusVersion } from "./corpus.js";
 
 export type EnhancementOutcome =
   | "enhanced"
-  /** Row still needs work; an attempt was recorded. */
+  /** The content defeated the model; an attempt was recorded (DD-045). */
   | "degraded"
+  /**
+   * Infrastructure was down or too slow. **No attempt recorded**, because a
+   * transport failure says nothing about this row's content, and a caller looping
+   * over rows should stop rather than spend the next row's attempt on the same
+   * outage (DD-045).
+   */
+  | "deferred"
   /** Nothing to attempt, or the row is gone. No attempt recorded. */
   | "skipped";
 
@@ -28,6 +35,29 @@ export interface EnhancementResult {
 
 /** DD-006: determinism matters more than creativity here. */
 const COMPRESSION_TEMPERATURE = 0;
+
+/**
+ * Why the model produced nothing usable. `content` means this row would fail
+ * again on a healthy Ollama; `transport` means no row would succeed right now.
+ * Only the first is evidence against the row, so only the first costs an attempt
+ * (DD-045).
+ */
+type FailureKind = "content" | "transport";
+
+type Attempted<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly kind: FailureKind };
+
+function classify(error: unknown): FailureKind {
+  if (isStrataError(error)) {
+    return error.code === "OLLAMA_UNAVAILABLE" || error.code === "DB_QUERY_FAILED"
+      ? "transport"
+      : "content";
+  }
+  // A non-StrataError here is a parse or validation throw from our own code, which
+  // is about the answer the model gave. Unreachable service always arrives coded.
+  return "content";
+}
 
 export async function enhanceMemory(
   record: MemoryRecord,
@@ -59,29 +89,27 @@ export async function enhanceMemory(
     }
 
     const compressed = await compress(content, deps, remaining(deadline));
-    if (compressed === undefined) {
-      await recordAttempt(record.id, deps);
-      return { record, outcome: "degraded" };
+    if (!compressed.ok) {
+      return await charge(record, compressed.kind, deps);
     }
 
-    summary = compressed.summary;
-    tags = normalizeTags(record.tags, compressed.suggested_tags);
+    summary = compressed.value.summary;
+    tags = normalizeTags(record.tags, compressed.value.suggested_tags);
   }
 
   const embedded = await embed(summary, deps, remaining(deadline));
 
   // applyEnhancement sets status='compressed', so calling it with only a new
   // embedding would mark an uncompressed row compressed.
-  if (!needsCompression && embedded === undefined) {
-    await recordAttempt(record.id, deps);
-    return { record, outcome: "degraded" };
+  if (!needsCompression && !embedded.ok) {
+    return await charge(record, embedded.kind, deps);
   }
 
   const updated = await deps.store.applyEnhancement(record.id, {
     summary,
     tags,
-    embedding: embedded?.vector ?? null,
-    embeddingModel: embedded?.model ?? null,
+    embedding: embedded.ok ? embedded.value.vector : null,
+    embeddingModel: embedded.ok ? embedded.value.model : null,
   });
 
   if (updated === undefined) {
@@ -98,23 +126,42 @@ export async function enhanceMemory(
      of model calls, and the repair pass has no insert in front of it at all. */
   await bumpCorpusVersion(deps, "enhance");
 
-  if (updated.needsEmbedding) {
-    await recordAttempt(record.id, deps);
-    return { record: updated, outcome: "degraded" };
+  // Compression landed but the vector did not. The row is better than it was and
+  // still incomplete, so the same rule applies to what is left of it.
+  if (!embedded.ok) {
+    return await charge(updated, embedded.kind, deps);
   }
 
   return { record: updated, outcome: "enhanced" };
 }
 
-/** `undefined` on any failure — compression is never fatal to the write (DD-005). */
+/**
+ * Turns a failure into an outcome, charging an attempt only when the content is
+ * what failed (DD-045). Never throws: the row is already durable (DD-005).
+ */
+async function charge(
+  record: MemoryRecord,
+  kind: FailureKind,
+  deps: ToolDeps,
+): Promise<EnhancementResult> {
+  if (kind === "transport") {
+    return { record, outcome: "deferred" };
+  }
+  await recordAttempt(record.id, deps);
+  return { record, outcome: "degraded" };
+}
+
+/** Never throws — compression is never fatal to the write (DD-005). */
 async function compress(
   content: string,
   deps: ToolDeps,
   timeoutMs: number,
-): Promise<{ summary: string; suggested_tags: string[] } | undefined> {
+): Promise<Attempted<{ summary: string; suggested_tags: string[] }>> {
   if (timeoutMs <= 0) {
+    // Transport, not content: the budget ran out before this row was ever shown to
+    // the model, so nothing was learned about it (DD-045).
     deps.log.warn({ stage: "compress" }, "enhancement budget exhausted, leaving row raw");
-    return undefined;
+    return { ok: false, kind: "transport" };
   }
 
   try {
@@ -123,14 +170,14 @@ async function compress(
       temperature: COMPRESSION_TEMPERATURE,
       timeoutMs,
     });
-    return parseCompressionResult(raw);
+    return { ok: true, value: parseCompressionResult(raw) };
   } catch (error: unknown) {
-    // OLLAMA_UNAVAILABLE and OLLAMA_BAD_RESPONSE mean the same thing to the row.
+    const kind = classify(error);
     deps.log.warn(
-      { stage: "compress", error: describeUnknown(error) },
+      { stage: "compress", kind, error: describeUnknown(error) },
       "compression failed, leaving row raw",
     );
-    return undefined;
+    return { ok: false, kind };
   }
 }
 
@@ -138,10 +185,10 @@ async function embed(
   summary: string,
   deps: ToolDeps,
   timeoutMs: number,
-): Promise<{ vector: readonly number[]; model: string } | undefined> {
+): Promise<Attempted<{ vector: readonly number[]; model: string }>> {
   if (timeoutMs <= 0) {
     deps.log.warn({ stage: "embed" }, "enhancement budget exhausted, leaving row unembedded");
-    return undefined;
+    return { ok: false, kind: "transport" };
   }
 
   try {
@@ -149,13 +196,14 @@ async function embed(
     // Re-checked at the last point before persistence: pgvector's own rejection
     // would arrive as an opaque insert failure rather than a named degradation.
     assertEmbeddingDimensions(result.vector, result.model);
-    return { vector: result.vector, model: result.model };
+    return { ok: true, value: { vector: result.vector, model: result.model } };
   } catch (error: unknown) {
+    const kind = classify(error);
     deps.log.warn(
-      { stage: "embed", error: describeUnknown(error) },
+      { stage: "embed", kind, error: describeUnknown(error) },
       "embedding failed, row keeps needs_embedding",
     );
-    return undefined;
+    return { ok: false, kind };
   }
 }
 

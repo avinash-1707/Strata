@@ -58,16 +58,47 @@ describe("the repair pass (DD-005 stage 3)", () => {
     await expect(repairPass(deps)).resolves.toMatchObject({ examined: 0, enhanced: 0 });
   });
 
-  it("leaves a row raw and counts the attempt when the model is still down", async () => {
-    const deps = createFakeDeps({ ollama: { generate: "unavailable" } });
+  it("leaves a row raw and counts the attempt when the content defeats the model", async () => {
+    const deps = createFakeDeps({ ollama: { generate: "wrongFields" } });
     const stored = await remember({ content: "a decision worth keeping" }, deps);
 
     const report = await repairPass(deps);
 
-    expect(report).toMatchObject({ examined: 1, enhanced: 0, degraded: 1 });
+    expect(report).toMatchObject({ examined: 1, enhanced: 0, degraded: 1, aborted: false });
     const row = deps.store.rows.find((candidate) => candidate.id === stored.id);
     // One from remember's inline stage 2, one from this pass.
     expect(row?.enhancementAttempts).toBe(2);
+  });
+
+  /* The compounding defect DD-045 exists to close: with the model down, the old pass
+     charged an attempt to every row in the batch, so five minutes of outage stranded
+     a whole session's writes at status:'raw' permanently. */
+  it("stops the pass and charges nothing when the model is unreachable (DD-045)", async () => {
+    const deps = createFakeDeps({ ollama: { generate: "unavailable" } });
+    deps.store.seed([
+      { id: "a", summary: "a", status: "raw", createdAt: new Date(1_000) },
+      { id: "b", summary: "b", status: "raw", createdAt: new Date(2_000) },
+      { id: "c", summary: "c", status: "raw", createdAt: new Date(3_000) },
+    ]);
+
+    const report = await repairPass(deps);
+
+    expect(report).toMatchObject({ examined: 1, enhanced: 0, degraded: 0, aborted: true });
+    // Not just the row it stopped on: the rows behind it were never touched either.
+    expect(deps.store.rows.map((row) => row.enhancementAttempts)).toEqual([0, 0, 0]);
+    expect(deps.ollama.generateCalls).toHaveLength(1);
+  });
+
+  it("resumes at full strength once the model is back", async () => {
+    const deps = createFakeDeps({ ollama: { generate: "unavailable" } });
+    deps.store.seed([{ id: "a", summary: "a", status: "raw" }]);
+
+    await repairPass(deps);
+    deps.ollama.setGenerateMode("ok");
+    const second = await repairPass(deps);
+
+    expect(second).toMatchObject({ examined: 1, enhanced: 1, aborted: false });
+    expect(deps.store.rows[0]?.enhancementAttempts).toBe(0);
   });
 
   it("takes the oldest rows first", async () => {
@@ -167,7 +198,7 @@ describe("the repair pass (DD-005 stage 3)", () => {
 
 describe("the repair pass cannot be starved by a poison row (DD-041)", () => {
   it("stops claiming a row once it has exhausted its attempts", async () => {
-    const deps = createFakeDeps({ ollama: { generate: "unavailable" } });
+    const deps = createFakeDeps({ ollama: { generate: "wrongFields" } });
     deps.store.seed([
       { id: "poison", summary: "p", status: "raw", enhancementAttempts: MAX_ENHANCEMENT_ATTEMPTS },
     ]);
@@ -180,7 +211,9 @@ describe("the repair pass cannot be starved by a poison row (DD-041)", () => {
      else. This is that scenario in miniature: batch size 1, one poison row that is
      older than the row behind it. */
   it("eventually reaches a healthy row queued behind a permanently failing one", async () => {
-    const deps = createFakeDeps({ ollama: { generate: "unavailable" } });
+    // A content failure, because only content is charged against the cap (DD-045):
+    // an unreachable model would abort each pass instead of capping the poison row.
+    const deps = createFakeDeps({ ollama: { generate: "wrongFields" } });
     deps.store.seed([
       { id: "poison", summary: "p", status: "raw", createdAt: new Date(1_000) },
       { id: "healthy", summary: "h", status: "raw", createdAt: new Date(2_000) },

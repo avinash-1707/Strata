@@ -159,12 +159,27 @@ describe("remember: Ollama is not load-bearing (DD-005)", () => {
   });
 
   it("counts a failed enhancement so the repair pass cannot retry it forever (DD-041)", async () => {
-    const deps = createFakeDeps({ ollama: { generate: "unavailable" } });
+    // Content the model mangles, not an outage: only the former is evidence
+    // against the row, and only the former is charged an attempt (DD-045).
+    const deps = createFakeDeps({ ollama: { generate: "wrongFields" } });
     const stored = await remember({ content: CONTENT }, deps);
 
     const row = deps.store.rows.find((candidate) => candidate.id === stored.id);
     expect(row?.enhancementAttempts).toBe(1);
     expect(row?.lastAttemptAt).toBeInstanceOf(Date);
+  });
+
+  /* The Phase 4 defect DD-045 names: an Ollama restart used to burn an attempt on
+     every row written during it, and five such minutes stranded a memory at
+     status:'raw' forever — invisible to semantic recall, with no error anywhere. */
+  it("charges no attempt when the model was merely unreachable (DD-045)", async () => {
+    const deps = createFakeDeps({ ollama: { generate: "unavailable" } });
+    const stored = await remember({ content: CONTENT }, deps);
+
+    expect(stored.status).toBe("raw");
+    const row = deps.store.rows.find((candidate) => candidate.id === stored.id);
+    expect(row?.enhancementAttempts).toBe(0);
+    expect(row?.lastAttemptAt).toBeNull();
   });
 
   it("does not count an attempt when everything succeeded", async () => {
@@ -321,9 +336,12 @@ describe("enhancement: the stage-2 budget", () => {
 
     const result = await enhanceMemory(row!, deps, 0);
 
-    expect(result.outcome).toBe("degraded");
+    // Deferred, not degraded: the row was never shown to the model, so nothing was
+    // learned about its content and nothing may be charged to it (DD-045).
+    expect(result.outcome).toBe("deferred");
     expect(result.record.status).toBe("raw");
     expect(deps.ollama.generateCalls).toEqual([]);
+    expect(deps.store.rows[0]?.enhancementAttempts).toBe(0);
     expect(log.messages("warn")).toContain("enhancement budget exhausted, leaving row raw");
   });
 
@@ -335,7 +353,8 @@ describe("enhancement: the stage-2 budget", () => {
 
     const result = await enhanceMemory(row!, deps, 0);
 
-    expect(result.outcome).toBe("degraded");
+    expect(result.outcome).toBe("deferred");
+    expect(deps.store.rows[0]?.enhancementAttempts).toBe(0);
     expect(deps.ollama.embedCalls).toEqual([]);
     expect(log.messages("warn")).toContain(
       "enhancement budget exhausted, leaving row unembedded",
@@ -393,7 +412,7 @@ describe("enhancement: the stage-2 budget", () => {
 
 describe("remember: bookkeeping failures do not surface", () => {
   it("serves the write when the attempt counter cannot be recorded", async () => {
-    const { deps, log } = withLog({ ollama: { generate: "unavailable" } });
+    const { deps, log } = withLog({ ollama: { generate: "wrongFields" } });
     deps.store.setFailure(
       "recordEnhancementAttempt",
       new StrataError("DB_QUERY_FAILED", "boom"),
