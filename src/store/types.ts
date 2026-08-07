@@ -94,6 +94,22 @@ export interface MemoryStore {
   recordEnhancementAttempt(id: string): Promise<void>;
 
   /**
+   * DD-012's eligibility predicate, and nothing more: it selects, it never merges.
+   *
+   * **Age plus zero usage, never `importance`.** No tool writes `importance`, so
+   * every row sits at the default and a predicate over it matches the entire corpus —
+   * which is how the original design would have fed the whole database to an
+   * unattended merge.
+   *
+   * Coldest first, so a truncated batch is the strongest candidates rather than an
+   * arbitrary slice.
+   */
+  findCompactionCandidates(
+    limit: number,
+    policy: CompactionPolicy,
+  ): Promise<readonly MemoryRecord[]>;
+
+  /**
    * Stamps `last_attempt_at` **without** incrementing the counter (DD-045).
    *
    * An outage is not evidence against the row, so it costs no attempt — but the row
@@ -103,6 +119,14 @@ export interface MemoryStore {
    * everything behind it forever. The stamp puts it behind its own backoff instead.
    */
   deferEnhancement(id: string): Promise<void>;
+}
+
+/** DD-012. Both numbers come from `config/budgets.ts`; the store only applies them. */
+export interface CompactionPolicy {
+  /** Days since the later of `created_at` and `last_recalled_at`. */
+  readonly minAgeDays: number;
+  /** A row at or above this `compaction_depth` is not eligible. */
+  readonly maxDepth: number;
 }
 
 /** DD-045. Both numbers come from `config/budgets.ts`; the store only applies them. */

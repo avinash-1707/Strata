@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { MAX_ENHANCEMENT_ATTEMPTS } from "../../src/config/budgets.js";
+import { COMPACTION_MAX_DEPTH, MAX_ENHANCEMENT_ATTEMPTS } from "../../src/config/budgets.js";
 import { EMBEDDING_DIMENSIONS } from "../../src/ollama/embedding.js";
 import type {
+  CompactionPolicy,
   EnhancementRetryPolicy,
   MemoryRecord,
   MemoryStore,
@@ -589,6 +590,78 @@ export function describeMemoryStore(
         await expect(
           store.recordEnhancementAttempt("00000000-0000-4000-8000-000000000999"),
         ).resolves.toBeUndefined();
+      });
+    });
+
+    /* DD-012. The suite cannot backdate a row — `created_at` is the store's to write —
+       so the age floor is exercised by moving the *floor* instead: `ANY_AGE` admits
+       everything already written, `UNREACHABLE_AGE` admits nothing. What only real SQL
+       can arrange (a genuinely 30-day-old row, and a row whose `importance` differs)
+       lives in pgCompaction.integration.test.ts. */
+    describe("findCompactionCandidates (DD-012)", () => {
+      const ANY_AGE: CompactionPolicy = { minAgeDays: 0, maxDepth: COMPACTION_MAX_DEPTH };
+      const UNREACHABLE_AGE: CompactionPolicy = { minAgeDays: 3_650, maxDepth: COMPACTION_MAX_DEPTH };
+
+      async function candidateIds(policy: CompactionPolicy = ANY_AGE): Promise<string[]> {
+        const found = await store.findCompactionCandidates(LIMIT, policy);
+        return found.map((row) => row.id);
+      }
+
+      it("offers a memory nobody has ever recalled", async () => {
+        const row = await compressed();
+        await tick();
+
+        await expect(candidateIds()).resolves.toContain(row.id);
+      });
+
+      /* The criterion, and the reason DD-011 is load-bearing: usage is the only signal
+         separating a memory worth keeping from one worth merging, and a cache hit that
+         did not count would make the most-recalled memories look coldest here. */
+      it("drops a memory the moment it is recalled once", async () => {
+        const row = await compressed();
+        await tick();
+        await expect(candidateIds()).resolves.toContain(row.id);
+
+        await store.touchUsage([row.id]);
+
+        await expect(candidateIds()).resolves.not.toContain(row.id);
+      });
+
+      it("holds back a memory younger than the age floor", async () => {
+        const row = await compressed();
+        await tick();
+
+        await expect(candidateIds(UNREACHABLE_AGE)).resolves.not.toContain(row.id);
+      });
+
+      it("never offers a forgotten memory", async () => {
+        const row = await compressed();
+        await store.softDelete(row.id);
+        await tick();
+
+        await expect(candidateIds()).resolves.not.toContain(row.id);
+      });
+
+      it("honors the limit", async () => {
+        await compressed({ contentHash: "compaction-a" });
+        await compressed({ contentHash: "compaction-b" });
+        await tick();
+
+        const found = await store.findCompactionCandidates(1, ANY_AGE);
+
+        expect(found).toHaveLength(1);
+      });
+
+      /* A row already at the depth cap must not be picked up again, or merges of
+         merges accumulate the drift the cap exists to prevent. maxDepth 0 stands in
+         for "already merged", which the seam has no way to create. */
+      it("excludes rows at or above the depth cap", async () => {
+        const row = await compressed();
+        await tick();
+
+        const found = await store.findCompactionCandidates(LIMIT, { ...ANY_AGE, maxDepth: 0 });
+
+        expect(found.map((candidate) => candidate.id)).not.toContain(row.id);
       });
     });
   });

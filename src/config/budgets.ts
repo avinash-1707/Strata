@@ -62,6 +62,33 @@ export const ENHANCEMENT_RETRY_POLICY = {
 export const REPAIR_INTERVAL_MS = 60_000;
 
 /**
+ * How long a memory must go untouched before compaction may consider it (DD-012).
+ * The clock is `greatest(created_at, last_recalled_at)`, so a memory that is read
+ * keeps resetting it and never becomes a candidate at all.
+ */
+export const COMPACTION_MIN_AGE_DAYS = 30;
+
+/**
+ * The `compaction_depth` ceiling (DD-012). It bounds selection as well as output: a
+ * row already at the cap must not be picked up again, or merges of merges would
+ * accumulate exactly the drift the cap exists to prevent. At 1 this reads as "only
+ * never-merged rows are eligible" — deliberately, until DD-024 measures whether a 3B
+ * model can merge without fabricating.
+ */
+export const COMPACTION_MAX_DEPTH = 1;
+
+/**
+ * Candidates per dry run. Large enough that a human reviewing the output sees the
+ * shape of what compaction would do, small enough to actually read.
+ */
+export const COMPACTION_BATCH_SIZE = 50;
+
+export const COMPACTION_POLICY = {
+  minAgeDays: COMPACTION_MIN_AGE_DAYS,
+  maxDepth: COMPACTION_MAX_DEPTH,
+} as const;
+
+/**
  * Recall cache entry lifetime (DD-010). Correctness never depends on this —
  * version-scoped keys make stale entries unreachable — so it only bounds how long
  * an unreachable generation occupies Redis memory, while staying long enough for

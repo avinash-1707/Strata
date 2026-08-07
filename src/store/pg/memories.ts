@@ -1,6 +1,12 @@
 import { StrataError, isStrataError } from "../../errors.js";
 import type { Db, Queryable, Row } from "../../db/types.js";
-import type { EnhancementRetryPolicy, Enhancement, MemoryRecord, NewMemory } from "../types.js";
+import type {
+  CompactionPolicy,
+  EnhancementRetryPolicy,
+  Enhancement,
+  MemoryRecord,
+  NewMemory,
+} from "../types.js";
 
 /** Postgres unique_violation — the memories_hash_live_idx raising on a race. */
 const UNIQUE_VIOLATION = "23505";
@@ -236,6 +242,32 @@ export async function findEnhancementBacklog(
      order by created_at, id
      limit $1`,
     [limit, policy.maxAttempts, policy.retryBaseMs],
+  );
+  return rows.map(toMemoryRecord);
+}
+
+export async function findCompactionCandidates(
+  db: Queryable,
+  limit: number,
+  policy: CompactionPolicy,
+): Promise<readonly MemoryRecord[]> {
+  const rows = await db.query<MemoryRow>(
+    /* DD-012. `importance` appears nowhere on purpose: no tool writes it, so every
+       row holds the default and a predicate over it selects the whole corpus.
+       `recall_count = 0` is the usage half, and it is only trustworthy because a
+       cache hit also counts (DD-011) — without that, the most-recalled memories would
+       look coldest here.
+
+       Server-side `now()`, never an app timestamp: two processes with drifting
+       clocks would disagree about what is old. */
+    `select ${MEMORY_COLUMNS} from live_memories
+     where recall_count = 0
+       and compaction_depth < $3
+       and greatest(created_at, coalesce(last_recalled_at, created_at))
+           < now() - interval '1 day' * $2::double precision
+     order by greatest(created_at, coalesce(last_recalled_at, created_at)), id
+     limit $1`,
+    [limit, policy.minAgeDays, policy.maxDepth],
   );
   return rows.map(toMemoryRecord);
 }

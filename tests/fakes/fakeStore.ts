@@ -76,6 +76,9 @@ export interface FakeStoreOptions {
 /** Fixed epoch so seeded `createdAt` values are deterministic and ordered. */
 const SEED_EPOCH_MS = Date.UTC(2026, 0, 1);
 
+/** DD-012's age floor arrives in days; the fake works in milliseconds. */
+const MS_PER_DAY = 24 * 60 * 60 * 1_000;
+
 /**
  * A deterministic but *contract-valid* default id. `memoryIdSchema` is `z.uuid()`
  * and the MCP SDK validates tool output against it, so a readable id like `seed-1`
@@ -423,6 +426,23 @@ export function createFakeStore(options: FakeStoreOptions = {}): FakeStore {
         )
         .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
         .slice(0, limit);
+    },
+
+    async findCompactionCandidates(limit, policy) {
+      await enter("findCompactionCandidates");
+      const floor = Date.now() - policy.minAgeDays * MS_PER_DAY;
+      const coldSince = (row: MemoryRecord): number =>
+        Math.max(row.createdAt.getTime(), row.lastRecalledAt?.getTime() ?? 0);
+      return (
+        live()
+          // DD-012: usage, never `importance` — which no tool writes, so filtering on
+          // it would select every row.
+          .filter((row) => row.recallCount === 0)
+          .filter((row) => row.compactionDepth < policy.maxDepth)
+          .filter((row) => coldSince(row) < floor)
+          .sort((a, b) => coldSince(a) - coldSince(b))
+          .slice(0, limit)
+      );
     },
 
     async deferEnhancement(id) {

@@ -3,6 +3,7 @@ import type { MemoryStore } from "../types.js";
 import {
   applyEnhancement,
   deferEnhancement,
+  findCompactionCandidates,
   findEnhancementBacklog,
   findLiveByContentHash,
   insertRaw,
@@ -28,6 +29,7 @@ export function createPgStore(db: Db): MemoryStore {
     softDelete: (id) => softDelete(db, id),
     restore: (id) => restore(db, id),
     findEnhancementBacklog: (limit, maxAttempts) => findEnhancementBacklog(db, limit, maxAttempts),
+    findCompactionCandidates: (limit, policy) => findCompactionCandidates(db, limit, policy),
     recordEnhancementAttempt: (id) => recordEnhancementAttempt(db, id),
     deferEnhancement: (id) => deferEnhancement(db, id),
   };
