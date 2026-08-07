@@ -4,10 +4,11 @@
 # Provisioning, in order. Each step is blocking and fails loudly:
 #
 #   cd /opt/strata
-#   cp .env.example .env && $EDITOR .env    # POSTGRES_PASSWORD has no default
+#   cp .env.example .env && $EDITOR .env    # POSTGRES_PASSWORD, MCP_AUTH_TOKEN
 #   docker compose -f docker-compose.prod.yml up -d --wait          # substrate
 #   docker compose -f docker-compose.prod.yml run --rm ollama-pull  # models
 #   docker compose -f docker-compose.prod.yml --profile app build   # app image
+#   docker compose -f docker-compose.prod.yml --profile app up -d --wait  # daemon
 #
 # The pull is `run`, not a dependency of `up`: `--wait` reports a service with no
 # healthcheck as satisfied the moment it is *running*, so it returns 0 both while
@@ -132,30 +133,40 @@ services:
     command: ['ollama pull "$${EMBEDDING_MODEL}" && ollama pull "$${INSTRUCT_MODEL}"']
     restart: "no"
 
-  # Behind a profile, so `up` above starts the substrate and stops. That is
-  # deliberate: src/main.ts serves MCP over stdio only, so there is no long-running
-  # server to detach — the process lives exactly as long as one client session.
-  # A long-running app service only becomes coherent when Phase 12 picks the
-  # cross-host transport (DD-026). Until then the client starts one per session:
+  # One long-lived daemon serving REST and MCP-over-HTTP (DD-036, DD-053). It is the
+  # only process that repairs the backlog, which is why the transport choice is not
+  # merely a networking detail: under the previous stdio shape the app ran once per
+  # client session, so N sessions meant N passes over one backlog and no session at
+  # all meant nothing repaired.
   #
-  #   ssh ubuntu 'cd /opt/strata && docker compose -f docker-compose.prod.yml \
-  #     run --rm -T strata'
-  #
-  # `cd` is required: ssh runs in $HOME, where the relative -f path, env_file, and
-  # build context all resolve to the wrong directory. -T keeps stdin/stdout raw
-  # pipes; a TTY would corrupt the JSON-RPC framing. (Compose writes its own
-  # progress to stderr, so stdout stays a clean protocol channel — DD-026.)
-  #
-  # WARNING — do not adopt this shape for concurrent clients before DD-045 lands.
-  # main.ts runs repairPass at boot and every REPAIR_INTERVAL_MS, so N sessions
-  # means N passes over one backlog, double-counting enhancement_attempts against
-  # a cap of 5; and with no session open, nothing repairs at all. DD-045's
-  # advisory lock plus a dedicated repair service is Phase 6 work.
+  # Still behind a profile, and the profile still means something: it keeps `up` from
+  # starting the daemon before `ollama-pull` has run, which would degrade every write
+  # in the interim to status:'raw' and leave the repair pass to undo it.
   strata:
     profiles: ["app"]
     build:
       context: .
       dockerfile: Dockerfile
+    restart: unless-stopped
+    # Both sides from the same variable, so a published port cannot drift from the
+    # port the app actually binds. LAN-visible by design: the agent is on another
+    # host, and MCP_AUTH_TOKEN is what stands in front of it (DD-036).
+    ports:
+      - "${HTTP_PORT:-8080}:${HTTP_PORT:-8080}"
+    healthcheck:
+      # `node -e`, not wget: node is the one binary this image is guaranteed to have,
+      # and reading the token from the process environment keeps it off a command line
+      # that `docker inspect` and `ps` would show.
+      test:
+        - CMD-SHELL
+        - >
+          node -e "const p=process.env.HTTP_PORT||8080;
+          fetch('http://127.0.0.1:'+p+'/v1/health',{headers:{authorization:'Bearer
+          '+process.env.MCP_AUTH_TOKEN}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      # Generous: the first check can land while boot migrations are still running.
+      retries: 10
     # Named and never pulled, so `run` starts an already-built image instead of
     # compiling TypeScript inside the client's server-launch path — a build there
     # would outlast any client startup timeout. Build is a provisioning step.

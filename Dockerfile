@@ -36,6 +36,10 @@ COPY --from=build /app/dist ./dist
 COPY package.json ./
 USER node
 
+# Documentation only — compose decides the published mapping. Matches HTTP_PORT's
+# default in src/config/env.ts.
+EXPOSE 8080
+
 # Exec form, so PID 1 is node itself and SIGTERM reaches the shutdown handlers in
-# src/mcp/stdio.ts rather than a shell that ignores it.
+# src/shutdown.ts rather than a shell that ignores it.
 CMD ["node", "dist/main.js"]
