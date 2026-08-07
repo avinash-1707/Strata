@@ -2,19 +2,10 @@ import { serve } from "@hono/node-server";
 import type { ServerType } from "@hono/node-server";
 import type { Hono } from "hono";
 
+import { CONNECTION_DRAIN_MS } from "../config/budgets.js";
+import { describeUnknown } from "../errors.js";
 import type { Logger } from "../logger.js";
 import { installShutdownHandlers, once, runTeardown } from "../shutdown.js";
-
-/**
- * How long an open connection gets to finish before it is severed.
- *
- * Node 19+ closes *idle* connections itself, so this is not about keep-alive: it is
- * about a socket mid-request. `close()` waits for those forever, which for a daemon
- * whose slowest handler calls a CPU-bound model means shutdown never completes and
- * `main.ts`'s watchdog exits non-zero on every deploy. Must stay well under
- * `SHUTDOWN_FLOOR_MS`, which also has a repair pass and two client closes to cover.
- */
-const CONNECTION_DRAIN_MS = 2_000;
 
 export interface ServeHttpOptions {
   readonly host: string;
@@ -36,19 +27,28 @@ export interface ServeHttpOptions {
 export async function serveHttp(app: Hono, options: ServeHttpOptions): Promise<void> {
   const { log } = options;
 
+  let failBoot: (error: Error) => void = () => undefined;
+
   const server = serve(
     { fetch: app.fetch, hostname: options.host, port: options.port },
     (info) => {
       log.info({ host: info.address, port: info.port }, "listening on http");
+      /* Swapped once the bind succeeded: from here `reject` is a no-op on a settled
+         promise, so leaving it attached would make a genuine server error vanish. */
+      server.off("error", failBoot);
+      server.on("error", (error: Error) => {
+        log.error({ error: describeUnknown(error) }, "http server error");
+      });
     },
   );
 
   /* Attached in the same tick as serve(): Node emits listen failures no earlier than
-     the next tick, and an 'error' with no listener is thrown, not reported. A bind
-     failure (EADDRINUSE, an unroutable host) must fail the boot loudly rather than
-     leave a process that answers nothing. */
+     the next tick, and an 'error' with no listener is thrown rather than reported. A
+     bind failure (EADDRINUSE, an unroutable host) must fail the boot loudly rather
+     than leave a process that answers nothing. */
   const closed = new Promise<void>((resolve, reject) => {
-    server.on("error", reject);
+    failBoot = reject;
+    server.on("error", failBoot);
     server.on("close", resolve);
   });
 

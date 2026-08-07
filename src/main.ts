@@ -1,6 +1,6 @@
 import { createRedisCache } from "./cache/redis.js";
 import type { Cache } from "./cache/types.js";
-import { REPAIR_INTERVAL_MS } from "./config/budgets.js";
+import { REPAIR_INTERVAL_MS, SHUTDOWN_FLOOR_MS } from "./config/budgets.js";
 import { loadConfig } from "./config/env.js";
 import { createDb } from "./db/client.js";
 import { withRepairLock } from "./db/locks.js";
@@ -17,9 +17,6 @@ import { createMcpHttpHandler } from "./mcp/http.js";
 import { serveStdio } from "./mcp/stdio.js";
 import { createOllamaClient } from "./ollama/client.js";
 import { createPgStore } from "./store/pg/index.js";
-
-/** A hung close() must not wedge shutdown: past this, exit anyway. */
-const SHUTDOWN_FLOOR_MS = 5_000;
 
 const levelCandidate = process.env["STRATA_LOG_LEVEL"];
 const log = createLogger(isLogLevel(levelCandidate) ? levelCandidate : "info");

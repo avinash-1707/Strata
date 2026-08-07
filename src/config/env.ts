@@ -16,12 +16,12 @@ const MIN_AUTH_TOKEN_LENGTH = 32;
  *  operator is forwarding over the same SSH session. */
 const DEFAULT_HTTP_PORT = 8080;
 
-/* Every interface, because the daemon's whole purpose is to be reached from another
-   host (DD-026) and inside a container 127.0.0.1 is unreachable from the published
-   port. What keeps that safe is that HTTP cannot be served without MCP_AUTH_TOKEN
-   (DD-036); narrow the exposure with the compose port binding, not with a default
-   that makes the container silently unreachable. */
-const DEFAULT_HTTP_HOST = "0.0.0.0";
+/* Loopback, even though the daemon exists to be reached from another host (DD-026):
+   the container sets 0.0.0.0 explicitly, so LAN exposure is a line an operator can
+   see in docker-compose.prod.yml next to the published port, rather than a default
+   that quietly exposes anyone who runs `pnpm start` on a laptop. The token is the
+   control, not the bind address — but a default should not need it to be safe. */
+const DEFAULT_HTTP_HOST = "127.0.0.1";
 
 const MAX_PORT = 65_535;
 

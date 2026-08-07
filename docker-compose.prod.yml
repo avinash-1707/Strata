@@ -177,6 +177,10 @@ services:
     # a hand-written POSTGRES_URL in the same file would silently drift from it.
     environment:
       POSTGRES_URL: postgres://strata:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/strata
+      # The one place LAN exposure is declared. src/config/env.ts defaults to
+      # loopback, which inside a container means the published port reaches nothing;
+      # widening it here keeps the decision next to the `ports` mapping that enacts it.
+      HTTP_HOST: 0.0.0.0
     depends_on:
       postgres:
         condition: service_healthy
