@@ -26,8 +26,16 @@
     "sourceMap": true
   },
   /* Typecheck covers tests too — a test that no longer compiles is a broken test.
-     scripts/ is included for the same reason: truth-find.ts is the instrument that
-     settles DD-008, and an instrument that does not compile settles nothing.
+     scripts/ and eval/ are included for the same reason: they are the instruments
+     that settle DD-008 and DD-021, and an instrument that does not compile settles
+     nothing. eval/run.ts is imported by no test, so without it listed here it would
+     never be checked at all.
      Emit settings live in tsconfig.build.json, which narrows this to src/. */
-  "include": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts", "*.config.ts"]
+  "include": [
+    "src/**/*.ts",
+    "tests/**/*.ts",
+    "scripts/**/*.ts",
+    "eval/**/*.ts",
+    "*.config.ts"
+  ]
 }

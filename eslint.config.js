@@ -169,6 +169,30 @@ export default tseslint.config(
   },
 
   {
+    /* The eval harness (DD-021). Unlike scripts/, it *must* import src/ — it measures
+       the real retrieval path, and a yardstick that reimplemented the pipeline would
+       measure a copy. What it may never import is a fake: recall@8 over stub vectors
+       is a number with no meaning, and it would look exactly like a real one. */
+    files: ["eval/**/*.ts"],
+    rules: {
+      "no-console": "off",
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/tests/**"],
+              message:
+                "eval/ may not import a test fake. Measuring retrieval against stub " +
+                "embeddings produces a number that means nothing. See DD-021.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  {
     files: ["eslint.config.js"],
     ...tseslint.configs.disableTypeChecked,
   },
