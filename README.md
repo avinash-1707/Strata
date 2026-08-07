@@ -260,6 +260,12 @@ the right one, and `remember` and `recall` are the two that matter.
 | `search_by_tag` | Exact tag lookup. Makes no model calls at all |
 | `forget` | Soft delete by id. Returns whether anything was deleted |
 
+Every field of every tool carries a description on the wire, not just the tools
+themselves. For an agent-facing server the schema is the entire specification: a field
+documented only in a comment beside its definition is a field the caller will guess at.
+A test walks the generated schemas and fails if any field, including the ones nested
+inside result arrays, has nothing to say for itself.
+
 ### HTTP routes
 
 The same domain logic, for scripts and dashboards that do not speak MCP. Versioned

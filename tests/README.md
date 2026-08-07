@@ -1,8 +1,9 @@
 # Tests
 
-42 files, 728 tests, and a shell script that tries to break the architecture.
+47 files, 740 tests, and a shell script that tries to break the architecture.
 Everything here runs in about two seconds without any container, which is deliberate:
-a suite that is slow to run is a suite that gets run less.
+a suite that is slow to run is a suite that gets run less. With Postgres and Redis up,
+the container-backed files stop skipping and the count is 846.
 
 ```bash
 pnpm test                  # the full suite; container-backed files skip themselves
@@ -38,10 +39,36 @@ Recent examples, each verified this way rather than assumed:
 - failing to clear the shutdown watchdog after a successful teardown
 - dropping the cancellation signal before it reaches the model call
 - dropping the between-rows abort check in the repair pass
+- dropping the corpus version prefix from the recall cache key, which resurrects a
+  forgotten memory from cache
+- removing the usage update from the cache hit branch, which is what would make the
+  most-recalled memories look coldest to compaction
+- dropping the deleted-at filter from the live rows view
+- dropping the tag index, and selecting compaction candidates on importance instead of
+  usage, which is the predicate the original design specified
 
 This discipline exists because the alternative already happened once here. A suite of
 several hundred passing tests missed a critical invariant, because every assertion for
 that invariant had been written around the code path that already worked.
+
+## Watch out for the assertion that cannot fail
+
+Seeing a check go red is necessary and not sufficient, because a check can go red for a
+reason other than the one in its name. Two shapes have shown up here more than once,
+and both were found by review rather than by the suite.
+
+The first is the vacuous negative. `expect(results).not.toContain(forgotten)` is
+satisfied by an empty list, so a delete that removed everything reads as a delete that
+worked. Every such assertion here now carries a positive control: something that must
+still be present.
+
+The second is the shadowed predicate. A test named for one rule can be satisfied
+entirely by a different one, leaving the rule it names untested and its implementation
+deletable with the suite still green. That happened to the compaction eligibility
+check: recording a recall also updates a timestamp, so the row was being excluded for
+being too recent rather than for having been read, and the usage filter it claimed to
+test was dead code. The fix is to neutralise every other rule first, so only the one
+under test can produce the result.
 
 ## Fakes, not mocks
 

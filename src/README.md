@@ -19,7 +19,7 @@ ollama/     model client, prompts, output parsing
 db/         connection pool, migrations, advisory locks
 
 tools/      domain logic, surface-agnostic, contains no SQL
-jobs/       the background repair pass
+jobs/       the background repair pass, and compaction's dry run
 
 mcp/        MCP surface: server, stdio, MCP over HTTP
 http/       REST surface: Hono app, auth, routes, listener
